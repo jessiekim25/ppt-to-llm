@@ -13,6 +13,19 @@ from .pdf_utils import extract_page_images, render_pdf_pages, resolve_pdf_input
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
 
+def _format_table(rows: list[dict]) -> list[str]:
+    lines: list[str] = []
+    for r in rows:
+        fmt = str(r.get("format", "")).strip()
+        file_names = r.get("file_names")
+        if not file_names:
+            single = r.get("file_name")
+            file_names = [single] if single else []
+        joined = " | ".join(str(x).strip() for x in file_names if str(x).strip())
+        lines.append(f"Format {fmt}: {joined}" if joined else f"Format {fmt}:")
+    return lines
+
+
 def parse_pages(spec: str) -> set[int]:
     """Parse '1,3,10-15,42' into a set of 1-indexed page numbers."""
     result: set[int] = set()
@@ -49,24 +62,28 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
     print(f"  [images] {len(saved)} extracted natively")
 
-    table_lines: list[str] = []
-    table = extracted.get("table") or []
-    if table:
-        for r in table:
-            fmt = str(r.get("format", "")).strip()
-            file_names = r.get("file_names")
-            if not file_names:
-                single = r.get("file_name")
-                file_names = [single] if single else []
-            joined = " | ".join(str(x).strip() for x in file_names if str(x).strip())
-            table_lines.append(f"Format {fmt}: {joined}" if joined else f"Format {fmt}:")
-
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
     if slide_detail:
         parts.append(slide_detail)
-    if table_lines:
-        parts.append("\n".join(table_lines))
+
+    slide_table_lines = _format_table(extracted.get("table") or [])
+    if slide_table_lines:
+        parts.append("\n".join(slide_table_lines))
+
+    for sh in extracted.get("subheaders") or []:
+        title = str(sh.get("title", "")).strip()
+        sh_detail = str(sh.get("detail", "")).strip()
+        sh_table_lines = _format_table(sh.get("table") or [])
+        block: list[str] = []
+        if title:
+            block.append(f"## {title}")
+        if sh_detail:
+            block.append(sh_detail)
+        if sh_table_lines:
+            block.append("\n".join(sh_table_lines))
+        if block:
+            parts.append("\n\n".join(block))
 
     row["detail"] = "\n\n".join(parts)
     row["image_path"] = str(assets_dir.resolve())

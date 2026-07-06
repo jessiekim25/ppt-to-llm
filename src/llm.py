@@ -16,10 +16,20 @@ Slide-level string fields ("" if not visible):
 - model: specific phone model shown (e.g. "Galaxy S26 Ultra"). "" if none.
 
 Content fields:
-- detail: general body text on the slide that is NOT tied to a specific image region — introductory paragraphs, footnotes, do's & don'ts that describe the whole slide. Preserve specifics (hex codes, pixel values, ratios). "" if all text is region-specific.
-- table: array of objects, one entry per Format value in any Format / File name table on the slide.
-  IMPORTANT: some slides show one logical table laid out as TWO side-by-side Format/File-name column pairs (e.g. the left pair carries Format 1-2 and the right pair carries Format 3-4). Treat these as ONE continuous list of entries sorted by Format number — do not emit duplicate columns and do not skip the right-hand pair.
-  Each entry: {"format": "<value in Format column, usually a number>", "file_names": ["<file>", "<file>", ...]}. file_names is a list of every file name listed under that Format cell, in the order they appear (cells often contain multiple names on separate lines). Return [] if no such table.
+- detail: general body text on the slide that is NOT tied to any subheader (see below) — introductory paragraphs, footnotes, do's & don'ts that describe the whole slide. Preserve specifics (hex codes, pixel values, ratios). "" if all text lives under a subheader.
+- table: array of Format entries that belong to the slide as a whole (not tied to any subheader). Format the same way as subheader tables (see below). Return [] if no such table or if all tables are tied to subheaders.
+- subheaders: array describing the sub-titles that visually divide the slide into sections BELOW the main slide title. Many slides have one or more subheaders (e.g. a Campaign Assets slide split into "AP(Gaming)" and "Display Innovation" side by side). Each subheader groups the text/table/images that sit under it. If the slide has no subheaders (only a main title and one flat block of content), return "subheaders": [].
+  Each entry:
+  {
+    "title": "<the subheader text exactly as printed>",
+    "detail": "<body text under this subheader, preserving specifics; \"\" if none>",
+    "table": [ <Format entries that belong to this subheader> ]
+  }
+
+Table entry format (used in both `table` and `subheaders[].table`):
+  {"format": "<Format column value, usually a number>", "file_names": ["<file>", "<file>", ...]}
+  file_names is a list of every file name listed under that Format cell, in the order they appear (cells often contain multiple names on separate lines).
+  IMPORTANT: when a table under a subheader shows one logical list laid out as TWO side-by-side Format/File-name column pairs (e.g. the left pair carries Format 1-2 and the right pair carries Format 3-4), treat them as ONE continuous list sorted by Format number — do not emit duplicate columns and do not skip the right-hand pair.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
