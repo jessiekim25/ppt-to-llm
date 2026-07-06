@@ -24,8 +24,15 @@ Content fields:
     * sub-titles that horizontally divide the slide into sections (e.g. "AP(Gaming)" / "Display Innovation");
     * bold column headings at the top of side-by-side text blocks in a multi-column layout (e.g. three columns headed "Size" / "Arrangement" / "Hierarchy", each with descriptive text below);
     * color-highlighted labels marking each cell of a grid layout (e.g. yellow-highlighted "KV order", "Product logos", "Combining visuals", "Product positioning of X Series KV") — the highlight color/box marks the heading, and the paragraph next to or below it is that subheader's detail;
-    * bold captions under a row of images that name each panel type (e.g. "Single panel" / "L-shaped panel" / "Multi-panels", each followed by 1-2 sentences).
+    * bold captions under a row of images that name each panel type (e.g. "Single panel" / "L-shaped panel" / "Multi-panels", each followed by 1-2 sentences of description). Text captions sitting UNDER images always count — do not skip them because they look like image annotations.
   Capture ALL such headings on the slide, in reading order (top-to-bottom then left-to-right). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete — do not summarize and do not drop sentences. Return "subheaders": [] only when the slide is truly one flat block of content with no repeated column/section headings anywhere.
+
+  STRICT RULES — read carefully:
+    (a) EVERY heading on the slide must be its OWN entry in the subheaders array with its heading text in the `title` field. Do NOT collapse multiple headings into a single subheader's `detail` as a bulleted or dash-prefixed list. If your output would contain a line like "- Size: ..." or "Size: ..." followed by "- Arrangement: ..." inside one subheader's `detail`, you have merged separate subheaders into one — split them into distinct entries instead.
+    (b) The `title` field must contain ONLY the heading text (e.g. "Size", "KV order", "Single panel") — never the description, never a leading dash or bullet.
+    (c) The `detail` field must contain the full descriptive body text for THAT subheader only — never other subheaders' titles as bullets.
+    (d) Do not invent headings, and do not use the main slide title as a subheader.
+
   Each entry:
   {
     "title": "<the heading text exactly as printed>",
