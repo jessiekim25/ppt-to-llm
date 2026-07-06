@@ -27,20 +27,23 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then fill in real values
 ```
 
-`.env` values:
+All secrets live in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`. Create a single JSON secret named `ppt-to-llm` (override with the `PPT_TO_LLM_SECRET_NAME` env var) using `secrets.example.json` as the template:
 
+```json
+{
+  "OPENAI_API_KEY": "sk-...",
+  "OPENAI_MODEL": "gpt-4o",
+  "MYSQL_HOST": "localhost",
+  "MYSQL_PORT": "3306",
+  "MYSQL_USER": "jihwi",
+  "MYSQL_PASSWORD": "...",
+  "MYSQL_DATABASE": "jihwi"
+}
 ```
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o
-MYSQL_HOST=localhost
-MYSQL_PORT=3306
-MYSQL_USER=jihwi
-MYSQL_PASSWORD=...
-MYSQL_DATABASE=jihwi
-```
+
+AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these keys via `shared/aws_secrets.py` and returns a frozen `Settings` dataclass — mirrors the pattern from your other project.
 
 Create the table once (the CLI will also `CREATE TABLE IF NOT EXISTS`, but running the schema explicitly is nice on a fresh DB):
 
@@ -75,11 +78,14 @@ python -m src.extract --pdf path\to\deck.pdf --limit 5 --dry-run
 
 ```
 src/
-  extract.py     # CLI entry point
-  pdf_utils.py   # render_pdf_pages()
-  llm.py         # OpenAI vision extraction
-  db.py          # MySQL writer
-schema.sql       # jihwi.brand_guidelines DDL
+  extract.py         # CLI entry point
+  pdf_utils.py       # render_pdf_pages()
+  llm.py             # OpenAI vision extraction
+  db.py              # MySQL writer
+shared/
+  aws_secrets.py     # lazy dict-like proxy over the AWS secret
+  settings.py        # get_settings() -> frozen Settings dataclass
+schema.sql           # jihwi.brand_guidelines DDL
+secrets.example.json # template for the AWS Secrets Manager secret payload
 requirements.txt
-.env.example
 ```

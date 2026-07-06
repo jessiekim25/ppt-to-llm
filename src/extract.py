@@ -1,10 +1,10 @@
 import argparse
 import json
-import os
 from pathlib import Path
 
-from dotenv import load_dotenv
 from openai import OpenAI
+
+from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
@@ -46,11 +46,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    load_dotenv()
     args = parse_args()
 
     if not args.pdf.exists():
         raise SystemExit(f"PDF not found: {args.pdf}")
+
+    settings = get_settings()
 
     per_deck_dir = args.output_dir / args.pdf.stem
     print(f"[render] {args.pdf} -> {per_deck_dir}")
@@ -59,15 +60,14 @@ def main() -> None:
         image_paths = image_paths[: args.limit]
     print(f"[render] {len(image_paths)} slide images")
 
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"codename": args.codename, "product": args.product}
 
     rows: list[dict] = []
     for i, img in enumerate(image_paths, start=1):
         print(f"[extract] slide {i}/{len(image_paths)}: {img.name}")
         try:
-            data = extract_slide(client, model, img)
+            data = extract_slide(client, settings.openai_model, img)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
@@ -79,11 +79,11 @@ def main() -> None:
         return
 
     with connect(
-        host=os.environ.get("MYSQL_HOST", "localhost"),
-        port=int(os.environ.get("MYSQL_PORT", "3306")),
-        user=os.environ["MYSQL_USER"],
-        password=os.environ["MYSQL_PASSWORD"],
-        database=os.environ.get("MYSQL_DATABASE", "jihwi"),
+        host=settings.mysql_host,
+        port=settings.mysql_port,
+        user=settings.mysql_user,
+        password=settings.mysql_password,
+        database=settings.mysql_database,
     ) as conn:
         ensure_table(conn)
         for r in rows:
