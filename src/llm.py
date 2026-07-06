@@ -20,11 +20,16 @@ Content fields:
   IMPORTANT: numbered legends must be captured here in full. A numbered legend is a vertical or side-by-side list of items where each item begins with a small number in a circle (1, 2, 3, ...) followed by a short label and (optionally) a description. These legends explain the numbered callouts shown elsewhere on the slide (usually on top of an image or diagram). Capture every legend item verbatim, one per line, formatted as "N: <label> — <description>" (drop "—" if there's no description). Do NOT skip legends because they look like a caption or key.
   Preserve specifics (hex codes, pixel values, ratios). "" if there is truly no slide-level body text at all.
 - table: array of Format entries that belong to the slide as a whole (not tied to any subheader). Format the same way as subheader tables (see below). Return [] if no such table or if all tables are tied to subheaders.
-- subheaders: array describing the sub-titles that visually divide the slide into sections BELOW the main slide title. Many slides have one or more subheaders (e.g. a Campaign Assets slide split into "AP(Gaming)" and "Display Innovation" side by side). Each subheader groups the text/table/images that sit under it. If the slide has no subheaders (only a main title and one flat block of content), return "subheaders": [].
+- subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bolded, highlighted, or otherwise-emphasized short label that introduces a block of descriptive body text. This includes but is not limited to:
+    * sub-titles that horizontally divide the slide into sections (e.g. "AP(Gaming)" / "Display Innovation");
+    * bold column headings at the top of side-by-side text blocks in a multi-column layout (e.g. three columns headed "Size" / "Arrangement" / "Hierarchy", each with descriptive text below);
+    * color-highlighted labels marking each cell of a grid layout (e.g. yellow-highlighted "KV order", "Product logos", "Combining visuals", "Product positioning of X Series KV") — the highlight color/box marks the heading, and the paragraph next to or below it is that subheader's detail;
+    * bold captions under a row of images that name each panel type (e.g. "Single panel" / "L-shaped panel" / "Multi-panels", each followed by 1-2 sentences).
+  Capture ALL such headings on the slide, in reading order (top-to-bottom then left-to-right). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete — do not summarize and do not drop sentences. Return "subheaders": [] only when the slide is truly one flat block of content with no repeated column/section headings anywhere.
   Each entry:
   {
-    "title": "<the subheader text exactly as printed>",
-    "detail": "<body text under this subheader, preserving specifics; \"\" if none>",
+    "title": "<the heading text exactly as printed>",
+    "detail": "<all descriptive body text under/next to this heading, verbatim; \"\" if none>",
     "table": [ <Format entries that belong to this subheader> ]
   }
 - panels: array of the labeled visual blocks on the slide. Use this for slides that show one or more diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines). Return [] for slides whose visuals are just a single unlabeled product mockup or photo (native image extraction handles those).
