@@ -2,6 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
+from PIL import Image
 
 
 def resolve_pdf_input(pdf_or_zip: Path) -> Path:
@@ -22,6 +23,27 @@ def resolve_pdf_input(pdf_or_zip: Path) -> Path:
             with zf.open(member) as src, open(target, "wb") as dst:
                 dst.write(src.read())
     return target
+
+
+def crop_region(
+    slide_png: Path,
+    bbox_pct: tuple[float, float, float, float],
+    out_path: Path,
+    pad_pct: float = 0.01,
+) -> Path:
+    """Crop `slide_png` to the given fractional bbox (left, top, right, bottom) plus a small pad."""
+    img = Image.open(slide_png)
+    w, h = img.size
+    x1, y1, x2, y2 = bbox_pct
+    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
+    x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
+    y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
+        img.save(out_path, format="PNG")
+        return out_path
+    box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
+    img.crop(box).save(out_path, format="PNG")
+    return out_path
 
 
 def render_pdf_pages(

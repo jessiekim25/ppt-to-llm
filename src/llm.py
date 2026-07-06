@@ -4,17 +4,29 @@ from pathlib import Path
 
 from openai import OpenAI
 
-SYSTEM_PROMPT = """You extract structured metadata from a single slide of a Samsung campaign visual identity guideline deck.
+SYSTEM_PROMPT = """You extract structured data from a single slide of a Samsung campaign visual identity guideline deck.
 
-Return a JSON object with exactly these string fields (use "" when a field is not visible on the slide):
+Return a JSON object with these fields.
 
-- product: the general phone series/line shown (e.g. "Galaxy S", "Galaxy Z Flip", "Galaxy Watch"). "" if the slide is generic and shows no product line.
-- codename: the campaign project code name (e.g. "Miracle"). Only set this if the code name literally appears on the slide; do not guess from context.
-- section: the top-level section label printed at the very top-left of the slide (e.g. "01 Brand Basics", "Logo", "Color System", "Typography"). This deck is divided into four sections and each slide carries its section marker in the top-left. "" if nothing is there.
-- sub_section: the slide's main title/heading (usually the largest text near the top).
-- detail: the main body text of the slide as plain text — bullet points, captions, spec descriptions, do's and don'ts, all preserved as readable prose. Keep it faithful; do not summarize away specifics like hex codes, pixel values, or ratios.
-- model: the specific phone model depicted (e.g. "Galaxy S26 Ultra"). "" if none identifiable.
+Slide-level string fields ("" if not visible):
+- product: general phone series (e.g. "Galaxy S"). "" if generic.
+- codename: campaign code name (e.g. "Miracle"). Only set if literally on the slide.
+- section: top-level section label at the very top-left of the slide (e.g. "01 Brand Basics", "Campaign Assets"). "" if none.
+- sub_section: the slide's main title/heading.
+- model: specific phone model shown (e.g. "Galaxy S26 Ultra"). "" if none.
 
+Content fields:
+- detail: general body text on the slide that is NOT tied to a specific image region — introductory paragraphs, footnotes, do's & don'ts that describe the whole slide. Preserve specifics (hex codes, pixel values, ratios). "" if all text is region-specific.
+- table: array of objects, one per row of any Format / File name table on the slide. Each row: {"format": "<value in Format column, usually a number>", "file_name": "<value in File name column>"}. Return [] if no such table.
+- regions: array describing every visually distinct image region on the slide — photos, phone mockups, logo lockups, illustration panels, gray placeholder boxes marked "TBU", each visually separated graphic block. Do NOT include text boxes, tables, section headers, or the slide title as regions. Each region is an object:
+  {
+    "label": "<the visible number/name attached to the region if any, e.g. '1' or '2'; if unnumbered, a short descriptor like 'Main visual' or 'AP(Gaming)'>",
+    "bbox_pct": [x1, y1, x2, y2],   // left, top, right, bottom as fractions 0-1 of slide width/height
+    "description": "<one sentence: what the region shows>",
+    "associated_text": "<any text on the slide that specifically refers to this region, including table rows whose Format matches the label>"
+  }
+
+If the slide has no image regions at all, return "regions": [].
 Return ONLY the JSON object. No prose, no code fences."""
 
 

@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import render_pdf_pages, resolve_pdf_input
+from .pdf_utils import crop_region, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -31,12 +31,65 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, image_path: Path, defaults: dict) -> dict:
+def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
     row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
     for k, v in defaults.items():
         if not row.get(k) and v:
             row[k] = v
-    row["image_path"] = str(image_path.resolve())
+
+    # Per-slide assets folder (sibling of the slide PNG, sharing its stem).
+    assets_dir = slide_png.parent / slide_png.stem
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    region_lines: list[str] = []
+    regions = extracted.get("regions") or []
+    for idx, region in enumerate(regions, start=1):
+        bbox = region.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
+        try:
+            bbox_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError, IndexError):
+            print(f"  ! region {idx}: bad bbox {bbox!r}, skipping crop")
+            continue
+        out = assets_dir / f"img_{idx:02d}.png"
+        try:
+            crop_region(slide_png, bbox_tuple, out)
+        except Exception as e:
+            print(f"  ! region {idx}: crop failed: {e}")
+            continue
+        label = str(region.get("label") or idx).strip()
+        desc = str(region.get("description") or "").strip()
+        assoc = str(region.get("associated_text") or "").strip()
+        summary = f"Image {label} ({out.name})"
+        if desc:
+            summary += f" — {desc}"
+        if assoc:
+            summary += f" | {assoc}"
+        region_lines.append(summary)
+
+    if not regions:
+        # Nothing to crop — keep a full-slide copy in the folder so image_path stays useful.
+        (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
+
+    table_lines: list[str] = []
+    table = extracted.get("table") or []
+    if table:
+        table_lines.append("Format | File name")
+        for r in table:
+            fmt = str(r.get("format", "")).strip()
+            fn = str(r.get("file_name", "")).strip()
+            table_lines.append(f"{fmt} | {fn}")
+
+    parts: list[str] = []
+    slide_detail = row.get("detail", "").strip()
+    if slide_detail:
+        parts.append(slide_detail)
+    if region_lines:
+        parts.append("Images:\n" + "\n".join(region_lines))
+    if table_lines:
+        parts.append("Table:\n" + "\n".join(table_lines))
+
+    row["detail"] = "\n\n".join(parts)
+    row["image_path"] = str(assets_dir.resolve())
     return row
 
 
