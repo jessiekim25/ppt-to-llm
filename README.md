@@ -29,21 +29,16 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-All secrets live in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`. Create a single JSON secret named `ppt-to-llm` (override with the `PPT_TO_LLM_SECRET_NAME` env var) using `secrets.example.json` as the template:
+All secrets live in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`. This project reads from two existing secrets:
 
-```json
-{
-  "OPENAI_API_KEY": "sk-...",
-  "OPENAI_MODEL": "gpt-4o",
-  "MYSQL_HOST": "localhost",
-  "MYSQL_PORT": "3306",
-  "MYSQL_USER": "jihwi",
-  "MYSQL_PASSWORD": "...",
-  "MYSQL_DATABASE": "jihwi"
-}
-```
+| secret name | required keys                                                                       |
+| ----------- | ----------------------------------------------------------------------------------- |
+| `MySQL`     | `RDS_HOSTNAME`, `RDS_USERNAME_TESTDB`, `RDS_PASSWORD_TESTDB`, `RDS_DB_NAME`, `RDS_PORT` (optional, defaults to 3306) |
+| `LLMKeys`   | `OPENAI_API_KEY`, `OPENAI_MODEL` (optional, defaults to `gpt-4o`)                    |
 
-AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these keys via `shared/aws_secrets.py` and returns a frozen `Settings` dataclass — mirrors the pattern from your other project.
+Override the secret names with the `MYSQL_SECRET_NAME` / `LLM_SECRET_NAME` env vars if needed. See `secrets.example.json` for the expected shape.
+
+AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these secrets via `shared/aws_secrets.get_secret()` and returns a frozen `Settings` dataclass — mirrors the pattern from your other project.
 
 Create the table once (the CLI will also `CREATE TABLE IF NOT EXISTS`, but running the schema explicitly is nice on a fresh DB):
 

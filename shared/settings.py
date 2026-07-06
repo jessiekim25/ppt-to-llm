@@ -1,6 +1,10 @@
+import os
 from dataclasses import dataclass
 
-from shared.aws_secrets import secrets
+from shared.aws_secrets import get_secret
+
+MYSQL_SECRET_NAME = os.environ.get("MYSQL_SECRET_NAME", "MySQL")
+LLM_SECRET_NAME = os.environ.get("LLM_SECRET_NAME", "LLMKeys")
 
 
 @dataclass(frozen=True)
@@ -16,12 +20,14 @@ class Settings:
 
 def get_settings() -> Settings:
     """Centralized settings accessor backed by AWS Secrets Manager."""
+    mysql = get_secret(MYSQL_SECRET_NAME)
+    llm = get_secret(LLM_SECRET_NAME)
     return Settings(
-        openai_api_key=secrets["OPENAI_API_KEY"],
-        openai_model=secrets.get("OPENAI_MODEL") or "gpt-4o",
-        mysql_host=secrets.get("MYSQL_HOST") or "localhost",
-        mysql_port=int(secrets.get("MYSQL_PORT") or 3306),
-        mysql_user=secrets["MYSQL_USER"],
-        mysql_password=secrets["MYSQL_PASSWORD"],
-        mysql_database=secrets.get("MYSQL_DATABASE") or "jihwi",
+        openai_api_key=llm["OPENAI_API_KEY"],
+        openai_model=llm.get("OPENAI_MODEL") or "gpt-4o",
+        mysql_host=mysql["RDS_HOSTNAME"],
+        mysql_port=int(mysql.get("RDS_PORT") or 3306),
+        mysql_user=mysql["RDS_USERNAME_TESTDB"],
+        mysql_password=mysql["RDS_PASSWORD_TESTDB"],
+        mysql_database=mysql["RDS_DB_NAME"],
     )
