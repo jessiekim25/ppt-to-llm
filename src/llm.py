@@ -16,7 +16,9 @@ Slide-level string fields ("" if not visible):
 - model: specific phone model shown (e.g. "Galaxy S26 Ultra"). "" if none.
 
 Content fields:
-- detail: general body text on the slide that is NOT tied to any subheader (see below) — introductory paragraphs, footnotes, do's & don'ts that describe the whole slide. Preserve specifics (hex codes, pixel values, ratios). "" if all text lives under a subheader.
+- detail: general body text on the slide that is NOT tied to any subheader (see below) — introductory paragraphs, footnotes, do's & don'ts.
+  IMPORTANT: numbered legends must be captured here in full. A numbered legend is a vertical or side-by-side list of items where each item begins with a small number in a circle (1, 2, 3, ...) followed by a short label and (optionally) a description. These legends explain the numbered callouts shown elsewhere on the slide (usually on top of an image or diagram). Capture every legend item verbatim, one per line, formatted as "N: <label> — <description>" (drop "—" if there's no description). Do NOT skip legends because they look like a caption or key.
+  Preserve specifics (hex codes, pixel values, ratios). "" if there is truly no slide-level body text at all.
 - table: array of Format entries that belong to the slide as a whole (not tied to any subheader). Format the same way as subheader tables (see below). Return [] if no such table or if all tables are tied to subheaders.
 - subheaders: array describing the sub-titles that visually divide the slide into sections BELOW the main slide title. Many slides have one or more subheaders (e.g. a Campaign Assets slide split into "AP(Gaming)" and "Display Innovation" side by side). Each subheader groups the text/table/images that sit under it. If the slide has no subheaders (only a main title and one flat block of content), return "subheaders": [].
   Each entry:
@@ -24,6 +26,13 @@ Content fields:
     "title": "<the subheader text exactly as printed>",
     "detail": "<body text under this subheader, preserving specifics; \"\" if none>",
     "table": [ <Format entries that belong to this subheader> ]
+  }
+- panels: array of the labeled visual blocks on the slide. Use this for slides that show one or more diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines). Return [] for slides whose visuals are just a single unlabeled product mockup or photo (native image extraction handles those).
+  Each panel:
+  {
+    "label": "<the panel's title/heading exactly as printed on the slide>",
+    "bbox_pct": [x1, y1, x2, y2],  // fractions 0-1 of slide width/height (left, top, right, bottom). Include the panel's TITLE at the top, the visual itself, any numbered callouts on the visual, AND any caption text below it. Give a generous margin so nothing is cut off — err on the larger side. Two panels' boxes must not overlap.
+    "description": "<one sentence describing what the panel shows>"
   }
 
 Table entry format (used in both `table` and `subheaders[].table`):

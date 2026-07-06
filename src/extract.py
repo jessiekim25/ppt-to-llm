@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import extract_page_images, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -54,13 +54,33 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
     assets_dir = slide_png.parent / slide_png.stem
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    page_num = int(slide_png.stem.rsplit("_", 1)[-1])
-    saved = extract_page_images(pdf_path, page_num, assets_dir)
-    if not saved:
-        # No embedded raster images on the page (all vector / shape-based) —
-        # fall back to a full-slide copy so image_path resolves to something viewable.
-        (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
-    print(f"  [images] {len(saved)} extracted natively")
+    saved: list[Path] = []
+    panels = extracted.get("panels") or []
+    for idx, panel in enumerate(panels, start=1):
+        bbox = panel.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
+        try:
+            bbox_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError, IndexError):
+            print(f"  ! panel {idx}: bad bbox {bbox!r}, skipping")
+            continue
+        out = assets_dir / f"img_{idx:02d}.png"
+        try:
+            crop_region(slide_png, bbox_tuple, out, pad_pct=0.08)
+            saved.append(out)
+        except Exception as e:
+            print(f"  ! panel {idx}: crop failed: {e}")
+
+    if saved:
+        print(f"  [images] {len(saved)} panel crop(s)")
+    else:
+        page_num = int(slide_png.stem.rsplit("_", 1)[-1])
+        native = extract_page_images(pdf_path, page_num, assets_dir)
+        if native:
+            saved = native
+            print(f"  [images] {len(saved)} extracted natively")
+        else:
+            (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
+            print("  [images] no image regions or embedded images; saved full slide")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
