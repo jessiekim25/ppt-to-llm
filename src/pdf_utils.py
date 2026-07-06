@@ -2,6 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 from PIL import Image
 
 
@@ -44,6 +45,54 @@ def crop_region(
     box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
     img.crop(box).save(out_path, format="PNG")
     return out_path
+
+
+def extract_page_images(
+    pdf_path: Path,
+    page_number: int,
+    out_dir: Path,
+    min_pixels: int = 40 * 40,
+) -> list[Path]:
+    """Extract embedded raster images from a PDF page.
+
+    Images are saved as img_01.png, img_02.png, ... in reading order (top-to-bottom,
+    then left-to-right). Images smaller than `min_pixels` (width * height) are skipped
+    to filter icons and background specks.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        if page_number < 1 or page_number > len(pdf):
+            return []
+        page = pdf[page_number - 1]
+        collected: list[tuple[float, float, Image.Image]] = []
+        for obj in page.get_objects():
+            if obj.type != pdfium_c.FPDF_PAGEOBJ_IMAGE:
+                continue
+            try:
+                bitmap = obj.get_bitmap(render=True)
+                pil = bitmap.to_pil()
+            except Exception as e:
+                print(f"  ! image object skipped (bitmap failed: {e})")
+                continue
+            if pil.width * pil.height < min_pixels:
+                continue
+            try:
+                left, _bottom, _right, top = obj.get_pos()
+            except Exception:
+                left, top = 0.0, 0.0
+            # Sort by -top so higher-on-page comes first (PDF origin is bottom-left),
+            # then by left so left-side comes first at the same height.
+            collected.append((-float(top), float(left), pil))
+        collected.sort(key=lambda x: (x[0], x[1]))
+        paths: list[Path] = []
+        for i, (_, _, pil) in enumerate(collected, start=1):
+            out = out_dir / f"img_{i:02d}.png"
+            pil.save(out, format="PNG")
+            paths.append(out)
+        return paths
+    finally:
+        pdf.close()
 
 
 def render_pdf_pages(

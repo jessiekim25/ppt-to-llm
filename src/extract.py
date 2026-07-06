@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import crop_region, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import extract_page_images, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -31,7 +31,7 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
+def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) -> dict:
     row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
     for k, v in defaults.items():
         if not row.get(k) and v:
@@ -41,23 +41,13 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
     assets_dir = slide_png.parent / slide_png.stem
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    regions = extracted.get("regions") or []
-    for idx, region in enumerate(regions, start=1):
-        bbox = region.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
-        try:
-            bbox_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        except (TypeError, ValueError, IndexError):
-            print(f"  ! region {idx}: bad bbox {bbox!r}, skipping crop")
-            continue
-        out = assets_dir / f"img_{idx:02d}.png"
-        try:
-            crop_region(slide_png, bbox_tuple, out)
-        except Exception as e:
-            print(f"  ! region {idx}: crop failed: {e}")
-
-    if not regions:
-        # Nothing to crop — keep a full-slide copy in the folder so image_path stays useful.
+    page_num = int(slide_png.stem.rsplit("_", 1)[-1])
+    saved = extract_page_images(pdf_path, page_num, assets_dir)
+    if not saved:
+        # No embedded raster images on the page (all vector / shape-based) —
+        # fall back to a full-slide copy so image_path resolves to something viewable.
         (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
+    print(f"  [images] {len(saved)} extracted natively")
 
     table_lines: list[str] = []
     table = extracted.get("table") or []
@@ -146,7 +136,7 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        rows.append(build_row(data, img, defaults))
+        rows.append(build_row(data, img, defaults, pdf_path))
 
     if args.dry_run:
         for r in rows:
