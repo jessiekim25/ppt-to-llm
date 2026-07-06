@@ -17,11 +17,13 @@ Slide-level string fields ("" if not visible):
 
 Content fields:
 - detail: general body text on the slide that is NOT tied to a specific image region — introductory paragraphs, footnotes, do's & don'ts that describe the whole slide. Preserve specifics (hex codes, pixel values, ratios). "" if all text is region-specific.
-- table: array of objects, one per row of any Format / File name table on the slide. Each row: {"format": "<value in Format column, usually a number>", "file_name": "<value in File name column>"}. Return [] if no such table.
+- table: array of objects, one entry per Format value in any Format / File name table on the slide.
+  IMPORTANT: some slides show one logical table laid out as TWO side-by-side Format/File-name column pairs (e.g. the left pair carries Format 1-2 and the right pair carries Format 3-4). Treat these as ONE continuous list of entries sorted by Format number — do not emit duplicate columns and do not skip the right-hand pair.
+  Each entry: {"format": "<value in Format column, usually a number>", "file_names": ["<file>", "<file>", ...]}. file_names is a list of every file name listed under that Format cell, in the order they appear (cells often contain multiple names on separate lines). Return [] if no such table.
 - regions: array describing every visually distinct image region on the slide — photos, phone mockups, logo lockups, illustration panels, gray placeholder boxes marked "TBU", each visually separated graphic block. Do NOT include text boxes, tables, section headers, or the slide title as regions. Each region is an object:
   {
     "label": "<the visible number/name attached to the region if any, e.g. '1' or '2'; if unnumbered, a short descriptor like 'Main visual' or 'AP(Gaming)'>",
-    "bbox_pct": [x1, y1, x2, y2],   // left, top, right, bottom as fractions 0-1 of slide width/height
+    "bbox_pct": [x1, y1, x2, y2],   // left, top, right, bottom as fractions 0-1 of slide width/height. Include the FULL image region plus a small margin so nothing is cut off — err on the side of a slightly larger box rather than a tight one. Do not let two regions' boxes overlap; separate them cleanly.
     "description": "<one sentence: what the region shows>",
     "associated_text": "<any text on the slide that specifically refers to this region, including table rows whose Format matches the label>"
   }

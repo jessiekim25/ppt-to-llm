@@ -41,7 +41,6 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
     assets_dir = slide_png.parent / slide_png.stem
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    region_lines: list[str] = []
     regions = extracted.get("regions") or []
     for idx, region in enumerate(regions, start=1):
         bbox = region.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
@@ -55,16 +54,6 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
             crop_region(slide_png, bbox_tuple, out)
         except Exception as e:
             print(f"  ! region {idx}: crop failed: {e}")
-            continue
-        label = str(region.get("label") or idx).strip()
-        desc = str(region.get("description") or "").strip()
-        assoc = str(region.get("associated_text") or "").strip()
-        summary = f"Image {label} ({out.name})"
-        if desc:
-            summary += f" — {desc}"
-        if assoc:
-            summary += f" | {assoc}"
-        region_lines.append(summary)
 
     if not regions:
         # Nothing to crop — keep a full-slide copy in the folder so image_path stays useful.
@@ -73,20 +62,21 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict) -> dict:
     table_lines: list[str] = []
     table = extracted.get("table") or []
     if table:
-        table_lines.append("Format | File name")
         for r in table:
             fmt = str(r.get("format", "")).strip()
-            fn = str(r.get("file_name", "")).strip()
-            table_lines.append(f"{fmt} | {fn}")
+            file_names = r.get("file_names")
+            if not file_names:
+                single = r.get("file_name")
+                file_names = [single] if single else []
+            joined = " | ".join(str(x).strip() for x in file_names if str(x).strip())
+            table_lines.append(f"Format {fmt}: {joined}" if joined else f"Format {fmt}:")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
     if slide_detail:
         parts.append(slide_detail)
-    if region_lines:
-        parts.append("Images:\n" + "\n".join(region_lines))
     if table_lines:
-        parts.append("Table:\n" + "\n".join(table_lines))
+        parts.append("\n".join(table_lines))
 
     row["detail"] = "\n\n".join(parts)
     row["image_path"] = str(assets_dir.resolve())

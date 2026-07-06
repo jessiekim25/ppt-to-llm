@@ -29,7 +29,7 @@ def crop_region(
     slide_png: Path,
     bbox_pct: tuple[float, float, float, float],
     out_path: Path,
-    pad_pct: float = 0.01,
+    pad_pct: float = 0.05,
 ) -> Path:
     """Crop `slide_png` to the given fractional bbox (left, top, right, bottom) plus a small pad."""
     img = Image.open(slide_png)
