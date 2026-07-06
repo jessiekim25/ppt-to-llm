@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import render_pdf_pages
+from .pdf_utils import render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -44,7 +44,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Convert a campaign visual guideline PDF into rows in jihwi.brand_guidelines.",
     )
-    p.add_argument("--pdf", required=True, type=Path, help="Path to the guideline PDF.")
+    p.add_argument(
+        "--pdf",
+        required=True,
+        type=Path,
+        help="Path to the guideline PDF, or to a .zip containing one (extracted automatically).",
+    )
     p.add_argument(
         "--output-dir",
         type=Path,
@@ -72,15 +77,17 @@ def main() -> None:
     args = parse_args()
 
     if not args.pdf.exists():
-        raise SystemExit(f"PDF not found: {args.pdf}")
+        raise SystemExit(f"Input not found: {args.pdf}")
+
+    pdf_path = resolve_pdf_input(args.pdf)
 
     settings = get_settings()
 
     pages = parse_pages(args.pages) if args.pages else None
 
-    per_deck_dir = args.output_dir / args.pdf.stem
-    print(f"[render] {args.pdf} -> {per_deck_dir}")
-    image_paths = render_pdf_pages(args.pdf, per_deck_dir, dpi=args.dpi, pages=pages)
+    per_deck_dir = args.output_dir / pdf_path.stem
+    print(f"[render] {pdf_path} -> {per_deck_dir}")
+    image_paths = render_pdf_pages(pdf_path, per_deck_dir, dpi=args.dpi, pages=pages)
     if args.limit and not pages:
         image_paths = image_paths[: args.limit]
     print(f"[render] {len(image_paths)} slide images")

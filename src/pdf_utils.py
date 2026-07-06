@@ -1,6 +1,27 @@
+import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
+
+
+def resolve_pdf_input(pdf_or_zip: Path) -> Path:
+    """If given a .zip, extract the first PDF inside next to the archive and return its path."""
+    if pdf_or_zip.suffix.lower() != ".zip":
+        return pdf_or_zip
+    with zipfile.ZipFile(pdf_or_zip) as zf:
+        pdf_members = [
+            n for n in zf.namelist()
+            if n.lower().endswith(".pdf") and not n.endswith("/")
+        ]
+        if not pdf_members:
+            raise SystemExit(f"No PDF found inside {pdf_or_zip}")
+        member = pdf_members[0]
+        target = pdf_or_zip.parent / Path(member).name
+        if not target.exists():
+            print(f"[unzip] {pdf_or_zip.name} -> {target.name}")
+            with zf.open(member) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+    return target
 
 
 def render_pdf_pages(
