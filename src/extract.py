@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import mask_and_crop, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import extract_content_image, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -84,25 +84,28 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) -> dict:
+def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, slide_dpi: int = 150) -> dict:
     row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
     for k, v in defaults.items():
         if not row.get(k) and v:
             row[k] = v
     row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
 
-    # One "content" image per slide: whiteout every already-captured text
-    # region, then crop to content_bbox. That scrubs any captured text that
-    # would otherwise leak into the crop and lets the bbox be generous
-    # enough that image edges are never clipped.
-    content_bbox = extracted.get("content_bbox") or [0.0, 0.0, 0.0, 0.0]
-    text_regions = extracted.get("text_regions") or []
+    # One "content" image per slide, built without any LLM bboxes: enumerate
+    # the PDF's own text-object bounding boxes, whiteout each on the slide
+    # render, and auto-crop to the tight bounding box of whatever pixels
+    # remain. Text baked into rasters (e.g. words on a photo) survives; the
+    # slide's title, section marker, subheader text, and body copy are all
+    # real text objects and get scrubbed.
+    page_num = int(slide_png.stem.rsplit("_", 1)[-1])
     content_png = slide_png.with_name(f"{slide_png.stem}_content.png")
-    _, cropped = mask_and_crop(slide_png, content_bbox, text_regions, content_png)
+    _, cropped, masked = extract_content_image(
+        pdf_path, page_num, slide_png, content_png, dpi=slide_dpi
+    )
     if cropped:
-        print(f"  [image] masked {len(text_regions)} text region(s) + cropped -> {content_png.name}")
+        print(f"  [image] masked {masked} text object(s), auto-cropped -> {content_png.name}")
     else:
-        print(f"  [image] no content_bbox; saved full (masked) slide -> {content_png.name}")
+        print(f"  [image] no visual content after text mask -> {content_png.name}")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
@@ -186,7 +189,7 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        rows.append(build_row(data, img, defaults, pdf_path))
+        rows.append(build_row(data, img, defaults, pdf_path, slide_dpi=args.dpi))
 
     if args.dry_run:
         for r in rows:
