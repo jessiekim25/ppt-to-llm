@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 def resolve_pdf_input(pdf_or_zip: Path) -> Path:
@@ -32,28 +32,26 @@ def extract_content_image(
     slide_png: Path,
     out_path: Path,
     dpi: int = 150,
-    text_pad_px: int = 3,
-    crop_pad_pct: float = 0.02,
-    threshold: int = 240,
+    crop_pad_pct: float = 0.03,
+    background_area_pct: float = 0.9,
 ) -> tuple[Path, bool, int]:
     """Save the "visual content" region of a slide as a single PNG.
 
-    Method (deterministic, no LLM guessing):
-      1. Enumerate every text object on the PDF page via pypdfium2, get its
-         precise bounding box in PDF points, convert to pixel coordinates in
-         the rendered slide, and paint that rectangle white on `slide_png`.
-      2. Threshold the result (any pixel darker than `threshold` counts as
-         content) and find the tight bounding box of the remaining pixels.
-      3. Pad by `crop_pad_pct` and crop.
+    Method (deterministic, additive, no LLM guessing):
+      1. Enumerate every NON-text page object on the PDF page (images, paths,
+         shapes, shadings, form-XObjects) via pypdfium2. Text objects are
+         skipped entirely, so slide chrome (title, section, subheaders,
+         tables) is not part of the content region.
+      2. Skip whole-slide background rectangles — any single object whose
+         bbox covers more than `background_area_pct` of both page dimensions
+         (e.g. a full-bleed white background rect).
+      3. Union all remaining bboxes -> the content region.
+      4. Pad by `crop_pad_pct` and crop the rendered slide to that region.
 
-    Text baked into a raster image (e.g. words on top of a photo) is NOT a
-    text object in the PDF, so it survives step 1 — that's exactly what we
-    want. Captured slide chrome (title, section, subheaders, tables) IS
-    text-object text, so it gets scrubbed.
-
-    Returns (out_path, cropped, masked_count) where `cropped` is True if a
-    tight crop was produced, False if the slide was essentially blank after
-    masking (fallback: save the masked whole slide).
+    Returns (out_path, cropped, object_count) where `cropped` is True if a
+    real content region was found and cropped, False when the slide had no
+    non-text objects (e.g. text-only slide) and the whole slide is saved as
+    fallback.
     """
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
@@ -64,41 +62,45 @@ def extract_content_image(
             return out_path, False, 0
 
         page = pdf[page_number - 1]
-        _, page_height = page.get_size()
+        page_width, page_height = page.get_size()
         scale = dpi / 72
 
-        draw = ImageDraw.Draw(img)
-        masked = 0
-        for obj in page.get_objects():
-            if obj.type != pdfium_c.FPDF_PAGEOBJ_TEXT:
+        boxes: list[tuple[int, int, int, int]] = []
+        for obj in page.get_objects(max_depth=20):
+            if obj.type == pdfium_c.FPDF_PAGEOBJ_TEXT:
                 continue
             try:
                 left, bottom, right, top = obj.get_pos()
             except Exception:
                 continue
-            ix1 = int(left * scale) - text_pad_px
-            iy1 = int((page_height - top) * scale) - text_pad_px
-            ix2 = int(right * scale) + text_pad_px
-            iy2 = int((page_height - bottom) * scale) + text_pad_px
-            ix1 = max(0, ix1); iy1 = max(0, iy1)
-            ix2 = min(w, ix2); iy2 = min(h, iy2)
+            if right - left <= 0 or top - bottom <= 0:
+                continue
+            width_pct = (right - left) / page_width
+            height_pct = (top - bottom) / page_height
+            if width_pct >= background_area_pct and height_pct >= background_area_pct:
+                continue  # full-slide background shape
+            ix1 = max(0, int(left * scale))
+            iy1 = max(0, int((page_height - top) * scale))
+            ix2 = min(w, int(right * scale))
+            iy2 = min(h, int((page_height - bottom) * scale))
             if ix2 <= ix1 or iy2 <= iy1:
                 continue
-            draw.rectangle([ix1, iy1, ix2, iy2], fill="white")
-            masked += 1
+            boxes.append((ix1, iy1, ix2, iy2))
 
-        content_mask = img.convert("L").point(lambda v: 255 if v < threshold else 0)
-        bbox = content_mask.getbbox()
-        if not bbox:
+        if not boxes:
             img.save(out_path, format="PNG")
-            return out_path, False, masked
+            return out_path, False, 0
+
+        x1 = min(b[0] for b in boxes)
+        y1 = min(b[1] for b in boxes)
+        x2 = max(b[2] for b in boxes)
+        y2 = max(b[3] for b in boxes)
 
         pad = int(min(w, h) * crop_pad_pct)
-        x1, y1, x2, y2 = bbox
         x1 = max(0, x1 - pad); y1 = max(0, y1 - pad)
         x2 = min(w, x2 + pad); y2 = min(h, y2 + pad)
         img.crop((x1, y1, x2, y2)).save(out_path, format="PNG")
-        return out_path, True, masked
+        return out_path, True, len(boxes)
     finally:
         pdf.close()
 

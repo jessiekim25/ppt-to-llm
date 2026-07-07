@@ -99,13 +99,13 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, 
     # real text objects and get scrubbed.
     page_num = int(slide_png.stem.rsplit("_", 1)[-1])
     content_png = slide_png.with_name(f"{slide_png.stem}_content.png")
-    _, cropped, masked = extract_content_image(
+    _, cropped, obj_count = extract_content_image(
         pdf_path, page_num, slide_png, content_png, dpi=slide_dpi
     )
     if cropped:
-        print(f"  [image] masked {masked} text object(s), auto-cropped -> {content_png.name}")
+        print(f"  [image] union of {obj_count} non-text object(s) -> {content_png.name}")
     else:
-        print(f"  [image] no visual content after text mask -> {content_png.name}")
+        print(f"  [image] no non-text content on slide -> {content_png.name}")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
