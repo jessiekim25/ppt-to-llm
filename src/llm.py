@@ -66,7 +66,8 @@ Content fields:
   {
     "label": "<the panel's title/heading exactly as printed on the slide; for a mixed-content table with no separate title, use the concatenated column headers (e.g. \"Logo/lock-up | Name\")>",
     "bbox_pct": [x1, y1, x2, y2],  // fractions 0-1 of slide width/height (left, top, right, bottom). Include the panel's TITLE at the top, the visual itself, any numbered callouts on the visual, AND any caption text below it. Give a generous margin so nothing is cut off — err on the larger side. Two panels' boxes must not overlap.
-    "description": "<one sentence describing what the panel shows>"
+    "description": "<one sentence describing what the panel shows>",
+    "subheader_path": [ "<outermost subheader title>", ..., "<innermost subheader title>" ]  // the ordered list of subheader titles (from the `subheaders`/`children` tree) whose visual area encloses this panel, outermost first. E.g. a diagram sitting inside a "How to build layout:" child of a "4:1 proportion" parent -> ["4:1 proportion", "How to build layout:"]. Return [] if the panel is not inside any subheader (e.g. a full-slide diagram directly under the main title).
   }
 
 Return ONLY the JSON object. No prose, no code fences."""

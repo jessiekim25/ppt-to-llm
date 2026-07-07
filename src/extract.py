@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 from pathlib import Path
 
 from openai import OpenAI
@@ -11,6 +12,26 @@ from .llm import extract_slide
 from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
+
+
+def _slug(text: str, max_len: int = 40) -> str:
+    """Filesystem-safe slug: ASCII alnum, hyphen, underscore; spaces to underscores."""
+    text = re.sub(r"[^A-Za-z0-9\s\-_]", "", str(text))
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"_+", "_", text)
+    return text[:max_len].strip("_-")
+
+
+def _panel_filename(idx: int, panel: dict) -> str:
+    """Build a descriptive PNG filename from the panel index, subheader ancestry, and label."""
+    parts = [f"img_{idx:02d}"]
+    path_slugs = [s for s in (_slug(p) for p in (panel.get("subheader_path") or [])) if s]
+    if path_slugs:
+        parts.append("__".join(path_slugs))
+    label_slug = _slug(panel.get("label") or "")
+    if label_slug and label_slug not in path_slugs:
+        parts.append(label_slug)
+    return "__".join(parts) + ".png"
 
 
 def _render_subheader(sh: dict, depth: int = 2) -> str:
@@ -103,7 +124,7 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         except (TypeError, ValueError, IndexError):
             print(f"  ! panel {idx}: bad bbox {bbox!r}, skipping")
             continue
-        out = assets_dir / f"img_{idx:02d}.png"
+        out = assets_dir / _panel_filename(idx, panel)
         try:
             crop_region(slide_png, bbox_tuple, out, pad_pct=0.08)
             saved.append(out)
