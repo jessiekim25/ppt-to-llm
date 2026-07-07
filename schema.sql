@@ -3,6 +3,7 @@ CREATE DATABASE IF NOT EXISTS jihwi
 
 CREATE TABLE IF NOT EXISTS jihwi.brand_guidelines (
   id          INT AUTO_INCREMENT PRIMARY KEY,
+  page        INT,
   product     VARCHAR(255),
   codename    VARCHAR(255),
   section     VARCHAR(255),

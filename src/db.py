@@ -5,6 +5,7 @@ import pymysql
 DDL = """
 CREATE TABLE IF NOT EXISTS brand_guidelines (
   id          INT AUTO_INCREMENT PRIMARY KEY,
+  page        INT,
   product     VARCHAR(255),
   codename    VARCHAR(255),
   section     VARCHAR(255),
@@ -17,9 +18,9 @@ CREATE TABLE IF NOT EXISTS brand_guidelines (
 
 INSERT = """
 INSERT INTO brand_guidelines
-  (product, codename, section, detail, model, sub_section, image_path)
+  (page, product, codename, section, detail, model, sub_section, image_path)
 VALUES
-  (%(product)s, %(codename)s, %(section)s, %(detail)s, %(model)s, %(sub_section)s, %(image_path)s);
+  (%(page)s, %(product)s, %(codename)s, %(section)s, %(detail)s, %(model)s, %(sub_section)s, %(image_path)s);
 """
 
 

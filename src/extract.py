@@ -89,6 +89,7 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
     for k, v in defaults.items():
         if not row.get(k) and v:
             row[k] = v
+    row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
 
     # One "content" image per slide: a crop of the slide to the LLM's
     # content_bbox, capturing the visual region (images + captions + any
