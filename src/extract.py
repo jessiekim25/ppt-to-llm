@@ -29,6 +29,8 @@ def _panel_filename(idx: int, panel: dict) -> str:
     if path_slugs:
         parts.append("__".join(path_slugs))
     label_slug = _slug(panel.get("label") or "")
+    if not label_slug:
+        label_slug = _slug(panel.get("description") or "")
     if label_slug and label_slug not in path_slugs:
         parts.append(label_slug)
     return "__".join(parts) + ".png"
@@ -132,7 +134,8 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
             print(f"  ! panel {idx}: crop failed: {e}")
 
     if saved:
-        print(f"  [images] {len(saved)} panel crop(s)")
+        names = ", ".join(p.name for p in saved)
+        print(f"  [images] {len(saved)} panel crop(s): {names}")
     else:
         page_num = int(slide_png.stem.rsplit("_", 1)[-1])
         native = extract_page_images(pdf_path, page_num, assets_dir)
