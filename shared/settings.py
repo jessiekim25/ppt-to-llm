@@ -24,10 +24,10 @@ def get_settings() -> Settings:
     llm = get_secret(LLM_SECRET_NAME)
     return Settings(
         openai_api_key=llm["OPENAI_API_KEY"],
-        openai_model=llm.get("OPENAI_MODEL") or "gpt-4o",
+        openai_model="gpt-4o",
         mysql_host=mysql["RDS_HOSTNAME"],
-        mysql_port=int(mysql.get("RDS_PORT") or 3306),
+        mysql_port=int(3306),
         mysql_user=mysql["RDS_USERNAME_TESTDB"],
         mysql_password=mysql["RDS_PASSWORD_TESTDB"],
-        mysql_database=mysql["RDS_DB_NAME"],
+        mysql_database="jihwi",
     )

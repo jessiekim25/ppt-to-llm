@@ -6,14 +6,14 @@ Each slide becomes one row with these fields:
 
 | column        | meaning                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------- |
-| `page`        | source slide number in the PDF (e.g. `42`)                                                  |
-| `product`     | phone series/line the slide belongs to (e.g. `Galaxy S`)                                    |
-| `codename`    | campaign project code name (e.g. `Miracle`)                                                 |
+| `product`     | product series/line the slide belongs to (e.g. `Galaxy S26`)                                |
+| `codename`    | campaign project code name                                                                  |
 | `section`     | top-left section label of the slide (one of the four deck sections)                         |
 | `sub_section` | slide title / heading                                                                       |
 | `detail`      | slide body text — subheaders rendered as `## Heading`, nested children as `###`, plus tables |
-| `model`       | specific phone model shown on the slide (e.g. `Galaxy S26 Ultra`)                           |
+| `model`       | specific product model shown on the slide (e.g. `Galaxy S26 Ultra`)                          |
 | `image_path`  | absolute path of the per-slide assets folder containing the cropped images                  |
+| `page`        | source slide number in the PDF (e.g. `42`)                                                  |
 
 ## How it works
 
@@ -38,8 +38,6 @@ Subheaders in `detail` are rendered hierarchically so a downstream LLM can recon
 2. ...
 ```
 
-Tables land in the actual header labels the designer used (`Format | File name`, `Element | Spec`, `Logo/lock-up | Name`, ...) rather than a stamped-in schema.
-
 ## Setup
 
 ```bash
@@ -60,18 +58,6 @@ Override the secret names with the `MYSQL_SECRET_NAME` / `LLM_SECRET_NAME` env v
 
 AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these secrets via `shared/aws_secrets.get_secret()` and returns a frozen `Settings` dataclass.
 
-Create the table once (the CLI also runs `CREATE TABLE IF NOT EXISTS`, but running the schema explicitly is nice on a fresh DB):
-
-```bash
-mysql -u root -p < schema.sql
-```
-
-If you already have the table from an earlier version, add the `page` column:
-
-```sql
-ALTER TABLE jihwi.brand_guidelines ADD COLUMN page INT AFTER id;
-```
-
 ## Run against the Galaxy Miracle guideline
 
 The source file is a zip — the CLI unpacks it automatically if you point `--pdf` at the `.zip`.
@@ -81,7 +67,7 @@ The source file is a zip — the CLI unpacks it automatically if you point `--pd
 python -m src.extract ^
   --pdf "C:\Users\yebin.kim\2026 Galaxy Miracle VIS Guidelines_v1.6_260116_compressed.pdf.zip" ^
   --codename "Miracle" ^
-  --product "Galaxy S" ^
+  --product "Galaxy S26" ^
   --output-dir "C:\Users\yebin.kim\brand_guideline_images"
 ```
 
@@ -91,7 +77,6 @@ python -m src.extract ^
 
 | flag           | default          | notes                                                                                     |
 | -------------- | ---------------- | ----------------------------------------------------------------------------------------- |
-| `--pdf`        | (required)       | Path to a `.pdf` or a `.zip` containing one (extracted next to the archive on first run). |
 | `--output-dir` | `output/images`  | Rendered slide PNGs and per-slide assets folders land here.                               |
 | `--codename`   | `""`            | Fallback for the `codename` column when not visible on a slide.                           |
 | `--product`    | `""`            | Fallback for the `product` column when not visible on a slide.                            |
