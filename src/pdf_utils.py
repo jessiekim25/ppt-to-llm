@@ -2,7 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 def resolve_pdf_input(pdf_or_zip: Path) -> Path:
@@ -25,41 +25,33 @@ def resolve_pdf_input(pdf_or_zip: Path) -> Path:
     return target
 
 
-def mask_regions_and_save(
+def crop_and_save(
     slide_png: Path,
-    regions: list[dict],
+    bbox_pct: tuple[float, float, float, float] | list[float],
     out_path: Path,
-    pad_pct: float = 0.005,
-    fill: str = "white",
-) -> Path:
-    """Paint each region (bbox_pct rectangle) with `fill` and save the result.
+    pad_pct: float = 0.02,
+) -> tuple[Path, bool]:
+    """Crop `slide_png` to the given fractional bbox (with a small pad) and save.
 
-    Used to whiteout text regions that have already been captured in the structured
-    fields, leaving a single "content" image per slide that carries only the
-    graphics and any uncaptured on-image annotations.
+    Returns (out_path, cropped) where `cropped` is True when a real crop was written
+    and False when we saved the whole slide as a fallback (bbox missing/degenerate).
     """
     img = Image.open(slide_png).convert("RGB")
     w, h = img.size
-    draw = ImageDraw.Draw(img)
-    for r in regions or []:
-        if not isinstance(r, dict):
-            continue
-        bbox = r.get("bbox_pct") or [0.0, 0.0, 0.0, 0.0]
-        try:
-            x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        except (TypeError, ValueError, IndexError):
-            continue
-        x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
-        x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
-        y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
-        if x2 <= x1 or y2 <= y1:
-            continue
-        draw.rectangle(
-            [int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)],
-            fill=fill,
-        )
-    img.save(out_path, format="PNG")
-    return out_path
+    try:
+        x1, y1, x2, y2 = (float(bbox_pct[0]), float(bbox_pct[1]), float(bbox_pct[2]), float(bbox_pct[3]))
+    except (TypeError, ValueError, IndexError):
+        img.save(out_path, format="PNG")
+        return out_path, False
+    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
+    x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
+    y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
+        img.save(out_path, format="PNG")
+        return out_path, False
+    box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
+    img.crop(box).save(out_path, format="PNG")
+    return out_path, True
 
 
 def render_pdf_pages(

@@ -8,7 +8,7 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import mask_regions_and_save, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import crop_and_save, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -90,13 +90,17 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         if not row.get(k) and v:
             row[k] = v
 
-    # One "content" image per slide: the raster slide render with every
-    # already-captured text region painted white, so the file carries only
-    # the graphics plus any uncaptured on-image annotations.
-    text_regions = extracted.get("text_regions") or []
+    # One "content" image per slide: a crop of the slide to the LLM's
+    # content_bbox, capturing the visual region (images + captions + any
+    # labels not already in the text fields). If the bbox is degenerate,
+    # crop_and_save falls back to writing the full slide.
+    content_bbox = extracted.get("content_bbox") or [0.0, 0.0, 0.0, 0.0]
     content_png = slide_png.with_name(f"{slide_png.stem}_content.png")
-    mask_regions_and_save(slide_png, text_regions, content_png)
-    print(f"  [image] masked {len(text_regions)} text region(s) -> {content_png.name}")
+    _, cropped = crop_and_save(slide_png, content_bbox, content_png)
+    if cropped:
+        print(f"  [image] cropped to content_bbox -> {content_png.name}")
+    else:
+        print(f"  [image] no content_bbox; saved full slide -> {content_png.name}")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()

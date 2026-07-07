@@ -58,13 +58,12 @@ Content fields:
     "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ],
     "children": [ <nested subheader entries with the same schema; [] if none> ]
   }
-- text_regions: array of bounding boxes covering every text block on the slide whose content you captured in `section`, `sub_section`, `detail`, or any subheader's `title` / `detail` / `tables`. These rectangles will be painted white on the slide's raster render so the remaining image contains only the graphics plus any text you did NOT capture (image captions, in-image callouts, labels inside a diagram, etc.). Include the ENTIRE visible bounding rectangle of each captured text block (a comfortable margin around the glyphs) so no residual text pixels leak. Do NOT include text that lives inside an image/graphic (callouts, labels drawn on top of a diagram, watermarks) — that text stays part of the image.
-  Each entry:
-  {
-    "bbox_pct": [x1, y1, x2, y2],   // fractions 0-1 of slide width/height (left, top, right, bottom).
-    "kind": "section" | "sub_section" | "detail" | "subheader"   // which top-level field the text landed in
-  }
-  Return [] if nothing was captured (unlikely on a real slide).
+- content_bbox: a single bounding box, [x1, y1, x2, y2] in fractions 0-1 of slide width/height (left, top, right, bottom), that encloses the slide's ENTIRE visual content region — all images, illustrations, diagrams, product mockups, plus their captions and any small on-image labels / callouts you did NOT capture in the text fields above. The saved image is a crop of the slide to exactly this rectangle, so:
+    * include EVERY image on the slide inside the bbox — if visuals are scattered across the slide, use the bounding rectangle that spans all of them (some whitespace inside the crop is fine);
+    * include the captions and small labels sitting immediately below / beside those images;
+    * err generous with the margin around the outer edges so nothing important is cut off;
+    * do NOT include the main slide title, the top-left section marker, or the subheader text blocks that were captured in `detail` — those are text-only regions and shouldn't be inside the crop.
+  Return [0, 0, 0, 0] ONLY if the slide is truly text-only with no visual content at all; the pipeline will then save the whole slide as a fallback.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
