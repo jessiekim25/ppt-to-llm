@@ -202,11 +202,9 @@ def main() -> None:
     pages = parse_pages(args.pages) if args.pages else None
 
     per_deck_dir = args.output_dir / pdf_path.stem
-    print(f"[render] {pdf_path} -> {per_deck_dir}")
     image_paths = render_pdf_pages(pdf_path, per_deck_dir, dpi=args.dpi, pages=pages)
     if args.limit and not pages:
         image_paths = image_paths[: args.limit]
-    print(f"[render] {len(image_paths)} slide images")
 
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"codename": args.codename, "product": args.product}
