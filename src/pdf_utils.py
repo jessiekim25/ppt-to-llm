@@ -2,7 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def resolve_pdf_input(pdf_or_zip: Path) -> Path:
@@ -25,25 +25,51 @@ def resolve_pdf_input(pdf_or_zip: Path) -> Path:
     return target
 
 
-def crop_and_save(
+def mask_and_crop(
     slide_png: Path,
-    bbox_pct: tuple[float, float, float, float] | list[float],
+    content_bbox: tuple[float, float, float, float] | list[float],
+    text_regions: list[dict],
     out_path: Path,
-    pad_pct: float = 0.02,
+    crop_pad_pct: float = 0.06,
+    mask_pad_pct: float = 0.005,
+    fill: str = "white",
 ) -> tuple[Path, bool]:
-    """Crop `slide_png` to the given fractional bbox (with a small pad) and save.
+    """Paint each captured text region white, then crop to content_bbox and save.
 
     Returns (out_path, cropped) where `cropped` is True when a real crop was written
-    and False when we saved the whole slide as a fallback (bbox missing/degenerate).
+    and False when we saved the whole (still-masked) slide as a fallback (bbox
+    missing/degenerate).
     """
     img = Image.open(slide_png).convert("RGB")
     w, h = img.size
+
+    # 1. Whiteout every already-captured text region so it can't survive the crop.
+    draw = ImageDraw.Draw(img)
+    for r in text_regions or []:
+        if not isinstance(r, dict):
+            continue
+        bbox = r.get("bbox_pct") or [0.0, 0.0, 0.0, 0.0]
+        try:
+            mx1, my1, mx2, my2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        mx1 -= mask_pad_pct; my1 -= mask_pad_pct; mx2 += mask_pad_pct; my2 += mask_pad_pct
+        mx1 = max(0.0, min(1.0, mx1)); mx2 = max(0.0, min(1.0, mx2))
+        my1 = max(0.0, min(1.0, my1)); my2 = max(0.0, min(1.0, my2))
+        if mx2 <= mx1 or my2 <= my1:
+            continue
+        draw.rectangle(
+            [int(mx1 * w), int(my1 * h), int(mx2 * w), int(my2 * h)],
+            fill=fill,
+        )
+
+    # 2. Crop the (now text-scrubbed) slide to the content bbox.
     try:
-        x1, y1, x2, y2 = (float(bbox_pct[0]), float(bbox_pct[1]), float(bbox_pct[2]), float(bbox_pct[3]))
+        x1, y1, x2, y2 = (float(content_bbox[0]), float(content_bbox[1]), float(content_bbox[2]), float(content_bbox[3]))
     except (TypeError, ValueError, IndexError):
         img.save(out_path, format="PNG")
         return out_path, False
-    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
+    x1 -= crop_pad_pct; y1 -= crop_pad_pct; x2 += crop_pad_pct; y2 += crop_pad_pct
     x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
     y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
     if x2 <= x1 or y2 <= y1:

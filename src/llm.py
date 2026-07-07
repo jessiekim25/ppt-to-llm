@@ -61,9 +61,15 @@ Content fields:
 - content_bbox: a single bounding box, [x1, y1, x2, y2] in fractions 0-1 of slide width/height (left, top, right, bottom), that encloses the slide's ENTIRE visual content region — all images, illustrations, diagrams, product mockups, plus their captions and any small on-image labels / callouts you did NOT capture in the text fields above. The saved image is a crop of the slide to exactly this rectangle, so:
     * include EVERY image on the slide inside the bbox — if visuals are scattered across the slide, use the bounding rectangle that spans all of them (some whitespace inside the crop is fine);
     * include the captions and small labels sitting immediately below / beside those images;
-    * err generous with the margin around the outer edges so nothing important is cut off;
-    * do NOT include the main slide title, the top-left section marker, or the subheader text blocks that were captured in `detail` — those are text-only regions and shouldn't be inside the crop.
+    * err GENEROUS with the margin around the outer edges — better to include some extra whitespace than to cut off the edge of an image. Push each side outward by a comfortable amount past where the visual content actually ends.
+    * it's OK if some already-captured text ends up inside the bbox — those regions will be whited out via text_regions below before saving.
   Return [0, 0, 0, 0] ONLY if the slide is truly text-only with no visual content at all; the pipeline will then save the whole slide as a fallback.
+- text_regions: array of bounding boxes covering every text block on the slide whose content you captured in `section`, `sub_section`, `detail`, or any subheader's `title` / `detail` / `tables`. These rectangles will be painted white on the slide BEFORE the content_bbox crop, so any captured text that happens to sit inside the crop is scrubbed. Include the ENTIRE visible bounding rectangle of each captured text block (a comfortable margin around the glyphs). Do NOT include text that lives INSIDE an image/graphic (callouts, dimension labels drawn on a diagram, watermarks on a photo) — that text stays part of the image.
+  Each entry:
+  {
+    "bbox_pct": [x1, y1, x2, y2]   // fractions 0-1 of slide width/height
+  }
+  Return [] if no text was captured (unlikely on a real slide).
 
 Return ONLY the JSON object. No prose, no code fences."""
 
