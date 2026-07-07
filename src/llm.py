@@ -19,12 +19,21 @@ Content fields:
 - detail: general body text on the slide that is NOT tied to any subheader (see below) — introductory paragraphs, footnotes, do's & don'ts.
   IMPORTANT: numbered legends must be captured here in full. A numbered legend is a vertical or side-by-side list of items where each item begins with a small number in a circle (1, 2, 3, ...) followed by a short label and (optionally) a description. These legends explain the numbered callouts shown elsewhere on the slide (usually on top of an image or diagram). Capture every legend item verbatim, one per line, formatted as "N: <label> — <description>" (drop "—" if there's no description). Do NOT skip legends because they look like a caption or key.
   Preserve specifics (hex codes, pixel values, ratios). "" if there is truly no slide-level body text at all.
+
+  CAPTURE ALL TEXT OUTSIDE OF IMAGES. Any text that sits OUTSIDE any image, chart, or graphic box on the slide must land somewhere in the output — either in this slide-level `detail` field or in the `detail` of the subheader it belongs to. This includes:
+    * short caption sentences printed BELOW an image (e.g. "When there are no ascenders or descenders, use less leading.");
+    * notes printed next to a red do-not symbol (⊘) or a green check mark that mark a right/wrong example;
+    * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
+    * footnotes, disclaimers, or fine print at the very bottom of the slide;
+    * dimension or measurement labels sitting outside the graphic they annotate.
+  An image or graphic is NEVER a boundary that stops text capture. If a subheader's area contains "heading → image → caption text", the caption text after the image is part of that subheader's `detail`.
 - table: array of Format entries that belong to the slide as a whole (not tied to any subheader). Format the same way as subheader tables (see below). Return [] if no such table or if all tables are tied to subheaders.
 - subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bolded, highlighted, or otherwise-emphasized short label that introduces a block of descriptive body text. This includes but is not limited to:
     * sub-titles that horizontally divide the slide into sections (e.g. "AP(Gaming)" / "Display Innovation");
     * bold column headings at the top of side-by-side text blocks in a multi-column layout (e.g. three columns headed "Size" / "Arrangement" / "Hierarchy", each with descriptive text below);
     * color-highlighted labels marking each cell of a grid layout (e.g. yellow-highlighted "KV order", "Product logos", "Combining visuals", "Product positioning of X Series KV") — the highlight color/box marks the heading, and the paragraph next to or below it is that subheader's detail;
     * bold captions under a row of images that name each panel type (e.g. "Single panel" / "L-shaped panel" / "Multi-panels", each followed by 1-2 sentences of description). Text captions sitting UNDER images always count — do not skip them because they look like image annotations.
+    * a heading followed by an image AND a short caption sentence below the image (e.g. a "Headline leading" heading, an example type-sample image, and a single-sentence caption below it like "When there are no ascenders or descenders, use less leading."). The heading is the subheader title; the caption below the image is part of that subheader's `detail` — do NOT stop the detail at the image.
   Capture ALL such headings on the slide, in reading order (top-to-bottom then left-to-right). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete — do not summarize and do not drop sentences. Return "subheaders": [] only when the slide is truly one flat block of content with no repeated column/section headings anywhere.
 
   STRICT RULES — read carefully:
