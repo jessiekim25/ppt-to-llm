@@ -24,7 +24,7 @@ Content fields:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide.
   Do NOT pull short caption sentences printed under an image into detail — those belong to the image and should stay part of it.
-- table: array of Format entries that belong to the slide as a whole (not tied to any subheader). Format the same way as subheader tables (see below). Return [] if no such table or if all tables are tied to subheaders.
+- table: array of Format entries — used ONLY when the slide has a table whose column headers are literally "Format" (usually a number 1, 2, 3, ...) and "File name" (asset filenames like ".psd" / ".jpg"). Format the same way as subheader tables (see below). Return [] if the slide has no such Format/File-name table, if the table is tied to a subheader instead, or if the table's columns are anything else (e.g. "Logo/lock-up" / "Name") — see the panels rule below for how to handle those.
 - subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bolded, highlighted, or otherwise-emphasized short label that introduces a block of descriptive body text. This includes but is not limited to:
     * sub-titles that horizontally divide the slide into sections (e.g. "AP(Gaming)" / "Display Innovation");
     * bold column headings at the top of side-by-side text blocks in a multi-column layout (e.g. three columns headed "Size" / "Arrangement" / "Hierarchy", each with descriptive text below);
@@ -44,10 +44,13 @@ Content fields:
     "detail": "<all descriptive body text under/next to this heading, verbatim; \"\" if none>",
     "table": [ <Format entries that belong to this subheader> ]
   }
-- panels: array of the labeled visual blocks on the slide. Use this for slides that show one or more diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines). Return [] for slides whose visuals are just a single unlabeled product mockup or photo (native image extraction handles those).
+- panels: array of the labeled visual blocks on the slide. Use this for:
+    (i) diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines);
+    (ii) MIXED-CONTENT TABLES — any table that contains images/graphics in one or more cells alongside text in other cells (e.g. a two-column table with a "Logo/lock-up" column showing product logo images and a "Name" column showing text names). For a mixed table, return ONE panel whose bbox spans the ENTIRE table including its header row and every row of cells. Do NOT try to describe such tables as text entries in `table` or in `detail` — the whole table becomes an image.
+  Return [] for slides whose visuals are just a single unlabeled product mockup or photo (native image extraction handles those).
   Each panel:
   {
-    "label": "<the panel's title/heading exactly as printed on the slide>",
+    "label": "<the panel's title/heading exactly as printed on the slide; for a mixed-content table with no separate title, use the concatenated column headers (e.g. \"Logo/lock-up | Name\")>",
     "bbox_pct": [x1, y1, x2, y2],  // fractions 0-1 of slide width/height (left, top, right, bottom). Include the panel's TITLE at the top, the visual itself, any numbered callouts on the visual, AND any caption text below it. Give a generous margin so nothing is cut off — err on the larger side. Two panels' boxes must not overlap.
     "description": "<one sentence describing what the panel shows>"
   }
