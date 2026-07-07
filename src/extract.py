@@ -13,6 +13,32 @@ from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resol
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
 
+def _render_subheader(sh: dict, depth: int = 2) -> str:
+    """Render one subheader (and its nested children) as a markdown-ish block.
+
+    depth=2 -> "## title", depth=3 -> "### title", and so on. Nested children get
+    depth+1 so downstream readers can rebuild the slide's section hierarchy.
+    """
+    title = str(sh.get("title", "")).strip()
+    sh_detail = str(sh.get("detail", "")).strip()
+    sh_tables = _format_tables(sh.get("tables") or [])
+    children = sh.get("children") or []
+
+    block: list[str] = []
+    if title:
+        prefix = "#" * max(2, min(depth, 6))
+        block.append(f"{prefix} {title}")
+    if sh_detail:
+        block.append(sh_detail)
+    if sh_tables:
+        block.append("\n".join(sh_tables))
+    for child in children:
+        child_block = _render_subheader(child, depth=depth + 1)
+        if child_block:
+            block.append(child_block)
+    return "\n\n".join(block)
+
+
 def _format_tables(tables: list[dict]) -> list[str]:
     """Render each table as its actual "col1 | col2 | ..." header row plus cell rows.
     Multi-line cells are collapsed to " / " so each row stays on one line."""
@@ -106,18 +132,9 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         parts.append("\n".join(slide_table_lines))
 
     for sh in extracted.get("subheaders") or []:
-        title = str(sh.get("title", "")).strip()
-        sh_detail = str(sh.get("detail", "")).strip()
-        sh_table_lines = _format_tables(sh.get("tables") or [])
-        block: list[str] = []
-        if title:
-            block.append(f"## {title}")
-        if sh_detail:
-            block.append(sh_detail)
-        if sh_table_lines:
-            block.append("\n".join(sh_table_lines))
-        if block:
-            parts.append("\n\n".join(block))
+        rendered = _render_subheader(sh, depth=2)
+        if rendered:
+            parts.append(rendered)
 
     row["detail"] = "\n\n".join(parts)
     row["image_path"] = str(assets_dir.resolve())

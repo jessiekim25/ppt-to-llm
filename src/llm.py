@@ -49,12 +49,14 @@ Content fields:
     (b) The `title` field must contain ONLY the heading text (e.g. "Size", "KV order", "Single panel") — never the description, never a leading dash or bullet.
     (c) The `detail` field must contain the full descriptive body text for THAT subheader only — never other subheaders' titles as bullets.
     (d) Do not invent headings, and do not use the main slide title as a subheader.
+    (e) NESTING: subheaders can nest. If a subheader's visual area contains another labeled sub-block below it (e.g. a "4:1 proportion" column that contains a "How to build layout:" sub-heading with a numbered list underneath), put that inner sub-block in the parent's `children` array — do NOT flatten it into the top-level subheaders list, and do NOT stuff the child's content into the parent's `detail`. This is what preserves "this How-to-build-layout belongs to 4:1, that one belongs to 6:1". A child subheader has the same schema as its parent and can itself have `children`.
 
   Each entry:
   {
     "title": "<the heading text exactly as printed>",
-    "detail": "<all descriptive body text under/next to this heading, verbatim; \"\" if none>",
-    "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ]
+    "detail": "<all descriptive body text under/next to this heading (excluding any child subheaders' content), verbatim; \"\" if none>",
+    "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ],
+    "children": [ <nested subheader entries with the same schema; [] if none> ]
   }
 - panels: array of the labeled visual blocks on the slide. Use this for:
     (i) diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines);
