@@ -61,8 +61,8 @@ Content fields:
   }
 - images: ordered list of the distinct visual regions on the slide, in reading order (top-to-bottom, then left-to-right). Each entry is ONE composite scene — if multiple layers, mockups, or graphics visually stack or overlap to form a single visual (e.g. a product photo with an overlay logo, a phone mockup with reflection layers, an OOH billboard shot with a KV pasted on it), that stack is ONE entry, not several. Each entry:
   {
-    "label": "<the header/title/caption text printed on the slide that names this visual, e.g. \"Galaxy S26\", \"Grid and lettermark\", \"AP(Gaming)\"; empty string if the visual has no visible label>",
-    "bbox_pct": [x1, y1, x2, y2]  // fractions 0-1 of slide width/height (left, top, right, bottom). CRITICAL: draw the bbox GENEROUSLY around the whole visual — push each side outward well past where the graphic actually ends, and include any captions or small labels that sit immediately below/beside it. Err large, not tight. Two entries' bboxes may overlap slightly if the visuals are close together.
+    "label": "<the header/title/caption text printed on the slide that names this visual, e.g. \"Galaxy S26\", \"Grid and lettermark\", \"AP(Gaming)\". If the visual is marked ONLY by a numbered gray/dark circle badge (a small circle with a digit inside) and has no other text label, use that digit as the label (e.g. \"1\", \"2\"). Otherwise empty string.>",
+    "bbox_pct": [x1, y1, x2, y2]  // fractions 0-1 of slide width/height (left, top, right, bottom). CRITICAL: draw the bbox GENEROUSLY around the whole visual — push each side outward well past where the graphic actually ends, and include any captions or small labels that sit immediately below/beside it. INCLUDE any numbered gray/dark circle badges that sit above/beside/attached to the visual — those badges tie the visual to a Format-table entry and MUST survive the crop, so extend the bbox to cover them. Err large, not tight. Two entries' bboxes may overlap slightly if the visuals are close together.
   }
   Return [] if the slide has no visual content at all (pure text slide).
 
