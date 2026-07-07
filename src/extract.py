@@ -1,6 +1,5 @@
 import argparse
 import json
-import re
 from pathlib import Path
 
 from openai import OpenAI
@@ -9,31 +8,9 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import mask_regions_and_save, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
-
-
-def _slug(text: str, max_len: int = 40) -> str:
-    """Filesystem-safe slug: ASCII alnum, hyphen, underscore; spaces to underscores."""
-    text = re.sub(r"[^A-Za-z0-9\s\-_]", "", str(text))
-    text = re.sub(r"\s+", "_", text.strip())
-    text = re.sub(r"_+", "_", text)
-    return text[:max_len].strip("_-")
-
-
-def _panel_filename(idx: int, panel: dict) -> str:
-    """Build a descriptive PNG filename from the panel index, subheader ancestry, and label."""
-    parts = [f"img_{idx:02d}"]
-    path_slugs = [s for s in (_slug(p) for p in (panel.get("subheader_path") or [])) if s]
-    if path_slugs:
-        parts.append("__".join(path_slugs))
-    label_slug = _slug(panel.get("label") or "")
-    if not label_slug:
-        label_slug = _slug(panel.get("description") or "")
-    if label_slug and label_slug not in path_slugs:
-        parts.append(label_slug)
-    return "__".join(parts) + ".png"
 
 
 def _render_subheader(sh: dict, depth: int = 2) -> str:
@@ -113,38 +90,13 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         if not row.get(k) and v:
             row[k] = v
 
-    # Per-slide assets folder (sibling of the slide PNG, sharing its stem).
-    assets_dir = slide_png.parent / slide_png.stem
-    assets_dir.mkdir(parents=True, exist_ok=True)
-
-    saved: list[Path] = []
-    panels = extracted.get("panels") or []
-    for idx, panel in enumerate(panels, start=1):
-        bbox = panel.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
-        try:
-            bbox_tuple = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        except (TypeError, ValueError, IndexError):
-            print(f"  ! panel {idx}: bad bbox {bbox!r}, skipping")
-            continue
-        out = assets_dir / _panel_filename(idx, panel)
-        try:
-            crop_region(slide_png, bbox_tuple, out, pad_pct=0.08)
-            saved.append(out)
-        except Exception as e:
-            print(f"  ! panel {idx}: crop failed: {e}")
-
-    if saved:
-        names = ", ".join(p.name for p in saved)
-        print(f"  [images] {len(saved)} panel crop(s): {names}")
-    else:
-        page_num = int(slide_png.stem.rsplit("_", 1)[-1])
-        native = extract_page_images(pdf_path, page_num, assets_dir)
-        if native:
-            saved = native
-            print(f"  [images] {len(saved)} extracted natively")
-        else:
-            (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
-            print("  [images] no image regions or embedded images; saved full slide")
+    # One "content" image per slide: the raster slide render with every
+    # already-captured text region painted white, so the file carries only
+    # the graphics plus any uncaptured on-image annotations.
+    text_regions = extracted.get("text_regions") or []
+    content_png = slide_png.with_name(f"{slide_png.stem}_content.png")
+    mask_regions_and_save(slide_png, text_regions, content_png)
+    print(f"  [image] masked {len(text_regions)} text region(s) -> {content_png.name}")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
@@ -161,7 +113,7 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
             parts.append(rendered)
 
     row["detail"] = "\n\n".join(parts)
-    row["image_path"] = str(assets_dir.resolve())
+    row["image_path"] = str(content_png.resolve())
     return row
 
 

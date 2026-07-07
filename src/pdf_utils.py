@@ -2,8 +2,7 @@ import zipfile
 from pathlib import Path
 
 import pypdfium2 as pdfium
-import pypdfium2.raw as pdfium_c
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 def resolve_pdf_input(pdf_or_zip: Path) -> Path:
@@ -26,73 +25,41 @@ def resolve_pdf_input(pdf_or_zip: Path) -> Path:
     return target
 
 
-def crop_region(
+def mask_regions_and_save(
     slide_png: Path,
-    bbox_pct: tuple[float, float, float, float],
+    regions: list[dict],
     out_path: Path,
-    pad_pct: float = 0.05,
+    pad_pct: float = 0.005,
+    fill: str = "white",
 ) -> Path:
-    """Crop `slide_png` to the given fractional bbox (left, top, right, bottom) plus a small pad."""
-    img = Image.open(slide_png)
-    w, h = img.size
-    x1, y1, x2, y2 = bbox_pct
-    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
-    x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
-    y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
-    if x2 <= x1 or y2 <= y1:
-        img.save(out_path, format="PNG")
-        return out_path
-    box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
-    img.crop(box).save(out_path, format="PNG")
-    return out_path
+    """Paint each region (bbox_pct rectangle) with `fill` and save the result.
 
-
-def extract_page_images(
-    pdf_path: Path,
-    page_number: int,
-    out_dir: Path,
-    min_pixels: int = 40 * 40,
-) -> list[Path]:
-    """Extract embedded raster images from a PDF page.
-
-    Images are saved as img_01.png, img_02.png, ... in reading order (top-to-bottom,
-    then left-to-right). Images smaller than `min_pixels` (width * height) are skipped
-    to filter icons and background specks.
+    Used to whiteout text regions that have already been captured in the structured
+    fields, leaving a single "content" image per slide that carries only the
+    graphics and any uncaptured on-image annotations.
     """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    try:
-        if page_number < 1 or page_number > len(pdf):
-            return []
-        page = pdf[page_number - 1]
-        collected: list[tuple[float, float, Image.Image]] = []
-        for obj in page.get_objects():
-            if obj.type != pdfium_c.FPDF_PAGEOBJ_IMAGE:
-                continue
-            try:
-                bitmap = obj.get_bitmap(render=True)
-                pil = bitmap.to_pil()
-            except Exception as e:
-                print(f"  ! image object skipped (bitmap failed: {e})")
-                continue
-            if pil.width * pil.height < min_pixels:
-                continue
-            try:
-                left, _bottom, _right, top = obj.get_pos()
-            except Exception:
-                left, top = 0.0, 0.0
-            # Sort by -top so higher-on-page comes first (PDF origin is bottom-left),
-            # then by left so left-side comes first at the same height.
-            collected.append((-float(top), float(left), pil))
-        collected.sort(key=lambda x: (x[0], x[1]))
-        paths: list[Path] = []
-        for i, (_, _, pil) in enumerate(collected, start=1):
-            out = out_dir / f"img_{i:02d}.png"
-            pil.save(out, format="PNG")
-            paths.append(out)
-        return paths
-    finally:
-        pdf.close()
+    img = Image.open(slide_png).convert("RGB")
+    w, h = img.size
+    draw = ImageDraw.Draw(img)
+    for r in regions or []:
+        if not isinstance(r, dict):
+            continue
+        bbox = r.get("bbox_pct") or [0.0, 0.0, 0.0, 0.0]
+        try:
+            x1, y1, x2, y2 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
+        x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
+        y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
+        if x2 <= x1 or y2 <= y1:
+            continue
+        draw.rectangle(
+            [int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)],
+            fill=fill,
+        )
+    img.save(out_path, format="PNG")
+    return out_path
 
 
 def render_pdf_pages(
