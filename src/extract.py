@@ -13,17 +13,31 @@ from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resol
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
 
-def _format_table(rows: list[dict]) -> list[str]:
-    lines: list[str] = []
-    for r in rows:
-        fmt = str(r.get("format", "")).strip()
-        file_names = r.get("file_names")
-        if not file_names:
-            single = r.get("file_name")
-            file_names = [single] if single else []
-        joined = " | ".join(str(x).strip() for x in file_names if str(x).strip())
-        lines.append(f"Format {fmt}: {joined}" if joined else f"Format {fmt}:")
-    return lines
+def _format_tables(tables: list[dict]) -> list[str]:
+    """Render each table as its actual "col1 | col2 | ..." header row plus cell rows.
+    Multi-line cells are collapsed to " / " so each row stays on one line."""
+    def cell(v: object) -> str:
+        parts = [p.strip() for p in str(v).splitlines() if p.strip()]
+        return " / ".join(parts)
+
+    out: list[str] = []
+    for i, t in enumerate(tables or []):
+        if not isinstance(t, dict):
+            continue
+        if i > 0:
+            out.append("")
+        title = str(t.get("title", "")).strip()
+        if title:
+            out.append(title)
+        columns = [str(c).strip() for c in (t.get("columns") or [])]
+        if columns:
+            out.append(" | ".join(columns))
+        for row in t.get("rows") or []:
+            cells = [cell(c) for c in row]
+            if columns and len(cells) < len(columns):
+                cells += [""] * (len(columns) - len(cells))
+            out.append(" | ".join(cells))
+    return out
 
 
 def parse_pages(spec: str) -> set[int]:
@@ -87,14 +101,14 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
     if slide_detail:
         parts.append(slide_detail)
 
-    slide_table_lines = _format_table(extracted.get("table") or [])
+    slide_table_lines = _format_tables(extracted.get("tables") or [])
     if slide_table_lines:
         parts.append("\n".join(slide_table_lines))
 
     for sh in extracted.get("subheaders") or []:
         title = str(sh.get("title", "")).strip()
         sh_detail = str(sh.get("detail", "")).strip()
-        sh_table_lines = _format_table(sh.get("table") or [])
+        sh_table_lines = _format_tables(sh.get("tables") or [])
         block: list[str] = []
         if title:
             block.append(f"## {title}")

@@ -24,7 +24,19 @@ Content fields:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide.
   Do NOT pull short caption sentences printed under an image into detail — those belong to the image and should stay part of it.
-- table: array of Format entries — used ONLY when the slide has a table whose column headers are literally "Format" (usually a number 1, 2, 3, ...) and "File name" (asset filenames like ".psd" / ".jpg"). Format the same way as subheader tables (see below). Return [] if the slide has no such Format/File-name table, if the table is tied to a subheader instead, or if the table's columns are anything else (e.g. "Logo/lock-up" / "Name") — see the panels rule below for how to handle those.
+- tables: array of TEXT-ONLY tables on the slide that are not tied to any subheader. Skip tables whose cells contain images/graphics — those go to panels (see below). Each table entry captures its own real column headers and row cells verbatim from the slide:
+  {
+    "title": "<any caption or title printed above the table, or \"\" if none>",
+    "columns": ["<first column header exactly as printed>", "<second column header>", ...],
+    "rows": [
+      ["<row 1 cell 1>", "<row 1 cell 2>", ...],
+      ["<row 2 cell 1>", "<row 2 cell 2>", ...]
+    ]
+  }
+  Real slide tables use whatever column labels the designer wrote — "Format" / "File name", "Logo/lock-up" / "Name", "Element" / "Spec" / "Notes", etc. Use the column headers actually printed on the slide; never invent, rename, translate, or substitute a header (in particular, do NOT stamp "Format" onto columns whose header is something else).
+  Cells often contain multiple lines (e.g. several file names stacked in one File name cell) — join those with "\\n" inside the single cell string; do not split a multi-line cell into extra rows.
+  When one logical table is laid out visually as TWO side-by-side identical-header column pairs (e.g. two "Format | File name" pairs stacked side by side, left carrying rows 1-2 and right carrying rows 3-4), treat it as ONE table with one set of column headers and all rows concatenated in the natural reading order.
+  Return "tables": [] if the slide has no text-only tables (including when the only tables are mixed image+text — those are panels).
 - subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bolded, highlighted, or otherwise-emphasized short label that introduces a block of descriptive body text. This includes but is not limited to:
     * sub-titles that horizontally divide the slide into sections (e.g. "AP(Gaming)" / "Display Innovation");
     * bold column headings at the top of side-by-side text blocks in a multi-column layout (e.g. three columns headed "Size" / "Arrangement" / "Hierarchy", each with descriptive text below);
@@ -42,7 +54,7 @@ Content fields:
   {
     "title": "<the heading text exactly as printed>",
     "detail": "<all descriptive body text under/next to this heading, verbatim; \"\" if none>",
-    "table": [ <Format entries that belong to this subheader> ]
+    "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ]
   }
 - panels: array of the labeled visual blocks on the slide. Use this for:
     (i) diagrams, annotated illustrations, layout examples, or any compound visual unit that reads as a self-contained titled block (each panel has a heading/label above its graphic and may contain numbered callouts, captions, or dimension lines);
@@ -54,11 +66,6 @@ Content fields:
     "bbox_pct": [x1, y1, x2, y2],  // fractions 0-1 of slide width/height (left, top, right, bottom). Include the panel's TITLE at the top, the visual itself, any numbered callouts on the visual, AND any caption text below it. Give a generous margin so nothing is cut off — err on the larger side. Two panels' boxes must not overlap.
     "description": "<one sentence describing what the panel shows>"
   }
-
-Table entry format (used in both `table` and `subheaders[].table`):
-  {"format": "<Format column value, usually a number>", "file_names": ["<file>", "<file>", ...]}
-  file_names is a list of every file name listed under that Format cell, in the order they appear (cells often contain multiple names on separate lines).
-  IMPORTANT: when a table under a subheader shows one logical list laid out as TWO side-by-side Format/File-name column pairs (e.g. the left pair carries Format 1-2 and the right pair carries Format 3-4), treat them as ONE continuous list sorted by Format number — do not emit duplicate columns and do not skip the right-hand pair.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
