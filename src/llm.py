@@ -58,9 +58,12 @@ Content fields:
     "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ],
     "children": [ <nested subheader entries with the same schema; [] if none> ]
   }
-- image_labels: ordered list of short header/title labels — one entry per distinct visual on the slide, in reading order (top-to-bottom, then left-to-right). Each entry is the text label / heading / caption printed on the slide that names the visual next to it (e.g. a mockup with "Galaxy S26" beside it -> "Galaxy S26"). Empty string if that particular visual has no visible label.
-  IMPORTANT: when multiple images visually stack or overlap to form ONE composite scene (e.g. a product photo with an overlay logo, a phone mockup with reflection layers, an OOH billboard shot with a KV pasted over it), treat that stack as ONE visual and give it ONE label. The image extraction pipeline groups overlapping image objects into a single cluster, so your list length should match the number of distinct visual regions you see on the slide, not the number of stacked layers inside them.
-  Return [] if the slide has no images at all.
+- images: ordered list of the distinct visual regions on the slide, in reading order (top-to-bottom, then left-to-right). Each entry is ONE composite scene — if multiple layers, mockups, or graphics visually stack or overlap to form a single visual (e.g. a product photo with an overlay logo, a phone mockup with reflection layers, an OOH billboard shot with a KV pasted on it), that stack is ONE entry, not several. Each entry:
+  {
+    "label": "<the header/title/caption text printed on the slide that names this visual, e.g. \"Galaxy S26\", \"Grid and lettermark\", \"AP(Gaming)\"; empty string if the visual has no visible label>",
+    "bbox_pct": [x1, y1, x2, y2]  // fractions 0-1 of slide width/height (left, top, right, bottom). CRITICAL: draw the bbox GENEROUSLY around the whole visual — push each side outward well past where the graphic actually ends, and include any captions or small labels that sit immediately below/beside it. Err large, not tight. Two entries' bboxes may overlap slightly if the visuals are close together.
+  }
+  Return [] if the slide has no visual content at all (pure text slide).
 
 Return ONLY the JSON object. No prose, no code fences."""
 

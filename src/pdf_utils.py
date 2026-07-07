@@ -26,6 +26,29 @@ def resolve_pdf_input(pdf_or_zip: Path) -> Path:
     return target
 
 
+def crop_bbox_and_save(
+    slide_png: Path,
+    bbox_pct: tuple[float, float, float, float] | list[float],
+    out_path: Path,
+    pad_pct: float = 0.10,
+) -> tuple[Path, bool]:
+    """Crop `slide_png` to `bbox_pct` (fractions 0-1, left/top/right/bottom) with a large pad."""
+    img = Image.open(slide_png).convert("RGB")
+    w, h = img.size
+    try:
+        x1, y1, x2, y2 = (float(bbox_pct[0]), float(bbox_pct[1]), float(bbox_pct[2]), float(bbox_pct[3]))
+    except (TypeError, ValueError, IndexError):
+        return out_path, False
+    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
+    x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
+    y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
+        return out_path, False
+    box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
+    img.crop(box).save(out_path, format="PNG")
+    return out_path, True
+
+
 def _bboxes_overlap(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
     """Two PDF-coord bboxes (left, bottom, right, top) — do they overlap?"""
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])

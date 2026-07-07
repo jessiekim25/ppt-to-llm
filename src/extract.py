@@ -9,7 +9,12 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import extract_page_images_clustered, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import (
+    crop_bbox_and_save,
+    extract_page_images_clustered,
+    render_pdf_pages,
+    resolve_pdf_input,
+)
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
 
@@ -100,32 +105,37 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, 
             row[k] = v
     row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
 
-    # Native image extraction with layer clustering: enumerate every embedded
-    # image object on the page, group overlapping objects into single visual
-    # clusters (so composited/stacked scenes come out as one crop of the
-    # rendered slide), and name each cluster after the header/label the LLM
-    # associated with that visual, in reading order.
+    # Image extraction: the LLM returns one entry per distinct visual region
+    # on the slide with a label and a generous bbox_pct. We crop the rendered
+    # slide to each bbox (with a large pad on top of the LLM's own margin) and
+    # save with a header-slugged filename. Native pypdfium2 image extraction
+    # doesn't work for these decks because most "images" are vector-drawn
+    # (paths and shapes), not embedded rasters.
     page_num = int(slide_png.stem.rsplit("_", 1)[-1])
     assets_dir = slide_png.parent / slide_png.stem
-    labels = [str(x) for x in (extracted.get("image_labels") or [])]
+    assets_dir.mkdir(parents=True, exist_ok=True)
 
-    def _name_for(idx: int, _pixel_bbox: tuple[int, int, int, int]) -> str:
-        label = labels[idx - 1] if idx - 1 < len(labels) else ""
+    llm_images = extracted.get("images") or []
+    saved_names: list[str] = []
+    for idx, entry in enumerate(llm_images, start=1):
+        if not isinstance(entry, dict):
+            continue
+        bbox = entry.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
+        label = str(entry.get("label") or "").strip()
         label_slug = _slug(label)
-        if label_slug:
-            return f"img_{idx:02d}__{label_slug}.png"
-        return f"img_{idx:02d}.png"
+        filename = f"img_{idx:02d}__{label_slug}.png" if label_slug else f"img_{idx:02d}.png"
+        out = assets_dir / filename
+        _, cropped = crop_bbox_and_save(slide_png, bbox, out, pad_pct=0.10)
+        if cropped:
+            saved_names.append(out.name)
+        else:
+            print(f"  ! image {idx}: bad bbox {bbox!r}, skipping")
 
-    saved = extract_page_images_clustered(
-        pdf_path, page_num, slide_png, assets_dir, dpi=slide_dpi, filename_for=_name_for
-    )
-    if saved:
-        names = ", ".join(p.name for p, _ in saved)
-        print(f"  [images] {len(saved)} clustered image(s): {names}")
+    if saved_names:
+        print(f"  [images] {len(saved_names)} LLM-directed crop(s): {', '.join(saved_names)}")
     else:
-        assets_dir.mkdir(parents=True, exist_ok=True)
         (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
-        print("  [images] no embedded images; saved full slide.png as fallback")
+        print("  [images] no image regions returned; saved full slide.png as fallback")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
