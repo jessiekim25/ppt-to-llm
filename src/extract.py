@@ -8,9 +8,66 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import crop_region, extract_page_images, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import (
+    crop_region,
+    extract_page_images,
+    extract_page_text,
+    render_pdf_pages,
+    resolve_pdf_input,
+)
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
+
+
+def _reference_lines(reference_text: str) -> list[str]:
+    """Split the PDF-native text dump into non-trivial lines for gap-filling."""
+    lines: list[str] = []
+    for raw in reference_text.splitlines():
+        line = raw.strip()
+        if len(line) < 4:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _covered(line: str, haystack: str) -> bool:
+    """Loose containment: exact substring match, case-insensitive, whitespace-collapsed."""
+    def norm(s: str) -> str:
+        return " ".join(s.split()).lower()
+    return norm(line) in norm(haystack)
+
+
+def _fold_missing_text(detail: str, extracted: dict, reference_text: str) -> str:
+    """Append any reference-text lines the model failed to include anywhere in the output."""
+    if not reference_text.strip():
+        return detail
+    haystack_parts = [detail]
+    for field in ("sub_section", "section", "product", "codename", "model"):
+        v = extracted.get(field)
+        if v:
+            haystack_parts.append(str(v))
+    for sh in extracted.get("subheaders") or []:
+        haystack_parts.append(str(sh.get("title") or ""))
+        haystack_parts.append(str(sh.get("detail") or ""))
+        for r in sh.get("table") or []:
+            haystack_parts.append(str(r.get("format", "")))
+            for fn in r.get("file_names") or []:
+                haystack_parts.append(str(fn))
+    for r in extracted.get("table") or []:
+        haystack_parts.append(str(r.get("format", "")))
+        for fn in r.get("file_names") or []:
+            haystack_parts.append(str(fn))
+    for p in extracted.get("panels") or []:
+        haystack_parts.append(str(p.get("label") or ""))
+        haystack_parts.append(str(p.get("description") or ""))
+    haystack = "\n".join(haystack_parts)
+
+    missing = [ln for ln in _reference_lines(reference_text) if not _covered(ln, haystack)]
+    if not missing:
+        return detail
+    print(f"  [gap-fill] appending {len(missing)} missed line(s) to detail")
+    tail = "\n".join(missing)
+    return f"{detail}\n\n{tail}" if detail else tail
 
 
 def _format_table(rows: list[dict]) -> list[str]:
@@ -44,7 +101,7 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) -> dict:
+def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, reference_text: str = "") -> dict:
     row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
     for k, v in defaults.items():
         if not row.get(k) and v:
@@ -105,7 +162,9 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path) 
         if block:
             parts.append("\n\n".join(block))
 
-    row["detail"] = "\n\n".join(parts)
+    detail = "\n\n".join(parts)
+    detail = _fold_missing_text(detail, extracted, reference_text)
+    row["detail"] = detail
     row["image_path"] = str(assets_dir.resolve())
     return row
 
@@ -168,12 +227,14 @@ def main() -> None:
     rows: list[dict] = []
     for i, img in enumerate(image_paths, start=1):
         print(f"[extract] slide {i}/{len(image_paths)}: {img.name}")
+        page_num = int(img.stem.rsplit("_", 1)[-1])
+        reference_text = extract_page_text(pdf_path, page_num)
         try:
-            data = extract_slide(client, settings.openai_model, img)
+            data = extract_slide(client, settings.openai_model, img, reference_text)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        rows.append(build_row(data, img, defaults, pdf_path))
+        rows.append(build_row(data, img, defaults, pdf_path, reference_text))
 
     if args.dry_run:
         for r in rows:
