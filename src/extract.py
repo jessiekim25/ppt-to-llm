@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 from pathlib import Path
 
 from openai import OpenAI
@@ -8,9 +9,17 @@ from shared.settings import get_settings
 
 from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
-from .pdf_utils import extract_content_image, render_pdf_pages, resolve_pdf_input
+from .pdf_utils import extract_page_images_clustered, render_pdf_pages, resolve_pdf_input
 
 FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
+
+
+def _slug(text: str, max_len: int = 60) -> str:
+    """Filesystem-safe slug: ASCII alnum, hyphen, underscore; spaces to underscores."""
+    text = re.sub(r"[^A-Za-z0-9\s\-_]", "", str(text))
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r"_+", "_", text)
+    return text[:max_len].strip("_-")
 
 
 def _render_subheader(sh: dict, depth: int = 2) -> str:
@@ -91,21 +100,32 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, 
             row[k] = v
     row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
 
-    # One "content" image per slide, built without any LLM bboxes: enumerate
-    # the PDF's own text-object bounding boxes, whiteout each on the slide
-    # render, and auto-crop to the tight bounding box of whatever pixels
-    # remain. Text baked into rasters (e.g. words on a photo) survives; the
-    # slide's title, section marker, subheader text, and body copy are all
-    # real text objects and get scrubbed.
+    # Native image extraction with layer clustering: enumerate every embedded
+    # image object on the page, group overlapping objects into single visual
+    # clusters (so composited/stacked scenes come out as one crop of the
+    # rendered slide), and name each cluster after the header/label the LLM
+    # associated with that visual, in reading order.
     page_num = int(slide_png.stem.rsplit("_", 1)[-1])
-    content_png = slide_png.with_name(f"{slide_png.stem}_content.png")
-    _, cropped, obj_count = extract_content_image(
-        pdf_path, page_num, slide_png, content_png, dpi=slide_dpi
+    assets_dir = slide_png.parent / slide_png.stem
+    labels = [str(x) for x in (extracted.get("image_labels") or [])]
+
+    def _name_for(idx: int, _pixel_bbox: tuple[int, int, int, int]) -> str:
+        label = labels[idx - 1] if idx - 1 < len(labels) else ""
+        label_slug = _slug(label)
+        if label_slug:
+            return f"img_{idx:02d}__{label_slug}.png"
+        return f"img_{idx:02d}.png"
+
+    saved = extract_page_images_clustered(
+        pdf_path, page_num, slide_png, assets_dir, dpi=slide_dpi, filename_for=_name_for
     )
-    if cropped:
-        print(f"  [image] union of {obj_count} non-text object(s) -> {content_png.name}")
+    if saved:
+        names = ", ".join(p.name for p, _ in saved)
+        print(f"  [images] {len(saved)} clustered image(s): {names}")
     else:
-        print(f"  [image] no non-text content on slide -> {content_png.name}")
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
+        print("  [images] no embedded images; saved full slide.png as fallback")
 
     parts: list[str] = []
     slide_detail = row.get("detail", "").strip()
@@ -122,7 +142,7 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, 
             parts.append(rendered)
 
     row["detail"] = "\n\n".join(parts)
-    row["image_path"] = str(content_png.resolve())
+    row["image_path"] = str(assets_dir.resolve())
     return row
 
 

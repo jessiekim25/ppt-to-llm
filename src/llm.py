@@ -58,7 +58,9 @@ Content fields:
     "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ],
     "children": [ <nested subheader entries with the same schema; [] if none> ]
   }
-(The content image is generated separately, from the PDF's own text-object bounding boxes — you do not need to describe image regions or return any bounding boxes in this JSON.)
+- image_labels: ordered list of short header/title labels — one entry per distinct visual on the slide, in reading order (top-to-bottom, then left-to-right). Each entry is the text label / heading / caption printed on the slide that names the visual next to it (e.g. a mockup with "Galaxy S26" beside it -> "Galaxy S26"). Empty string if that particular visual has no visible label.
+  IMPORTANT: when multiple images visually stack or overlap to form ONE composite scene (e.g. a product photo with an overlay logo, a phone mockup with reflection layers, an OOH billboard shot with a KV pasted over it), treat that stack as ONE visual and give it ONE label. The image extraction pipeline groups overlapping image objects into a single cluster, so your list length should match the number of distinct visual regions you see on the slide, not the number of stacked layers inside them.
+  Return [] if the slide has no images at all.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
