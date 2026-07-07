@@ -47,25 +47,6 @@ def crop_region(
     return out_path
 
 
-def extract_page_text(pdf_path: Path, page_number: int) -> str:
-    """Return all text on a page as a single string, using the PDF's text layer.
-
-    Empty string if the page has no text layer (e.g. flattened design PDF).
-    """
-    pdf = pdfium.PdfDocument(str(pdf_path))
-    try:
-        if page_number < 1 or page_number > len(pdf):
-            return ""
-        page = pdf[page_number - 1]
-        textpage = page.get_textpage()
-        try:
-            return textpage.get_text_range() or ""
-        finally:
-            textpage.close()
-    finally:
-        pdf.close()
-
-
 def extract_page_images(
     pdf_path: Path,
     page_number: int,

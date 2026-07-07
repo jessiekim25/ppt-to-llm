@@ -61,22 +61,12 @@ Table entry format (used in both `table` and `subheaders[].table`):
   file_names is a list of every file name listed under that Format cell, in the order they appear (cells often contain multiple names on separate lines).
   IMPORTANT: when a table under a subheader shows one logical list laid out as TWO side-by-side Format/File-name column pairs (e.g. the left pair carries Format 1-2 and the right pair carries Format 3-4), treat them as ONE continuous list sorted by Format number — do not emit duplicate columns and do not skip the right-hand pair.
 
-You will be given a REFERENCE TEXT DUMP alongside the image: every text string extracted directly from the PDF's text layer for this slide, one per line. Every non-trivial line in that dump MUST appear somewhere in your output (in detail, sub_section, section, model, product, codename, or under a subheader's title/detail/table). Use it as a checklist against your visual reading — if a line in the dump does not appear on the slide's visual layout you can see, still place it in slide-level detail (do not drop it). The dump may be in draw order, not reading order, so trust your visual reading for structure while using the dump for completeness.
-
 Return ONLY the JSON object. No prose, no code fences."""
 
 
-def extract_slide(client: OpenAI, model: str, image_path: Path, reference_text: str = "") -> dict:
+def extract_slide(client: OpenAI, model: str, image_path: Path) -> dict:
     b64 = base64.b64encode(image_path.read_bytes()).decode()
     data_url = f"data:image/png;base64,{b64}"
-    user_text = "Extract the fields from this slide."
-    if reference_text.strip():
-        user_text += (
-            "\n\nREFERENCE TEXT DUMP (every non-trivial line here MUST appear in your output):\n"
-            "---\n"
-            f"{reference_text.strip()}\n"
-            "---"
-        )
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -84,8 +74,8 @@ def extract_slide(client: OpenAI, model: str, image_path: Path, reference_text: 
             {
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
-                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": "Extract the fields from this slide."},
                 ],
             },
         ],
