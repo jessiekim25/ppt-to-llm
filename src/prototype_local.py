@@ -348,12 +348,52 @@ def classify_residue(plumber: dict, camelot_result: dict) -> list[str]:
 
 # ---------- driver ----------
 
-def run(pdf_path: Path, page_numbers: list[int], output_root: Path, dpi: int) -> None:
+def run(
+    pdf_path: Path,
+    page_numbers: list[int],
+    output_root: Path,
+    dpi: int,
+    write_db: bool = False,
+    classifier_model: str = "gpt-4o-mini",
+    codename: str = "",
+    product: str = "",
+) -> None:
     deck_dir = output_root / pdf_path.stem
     deck_dir.mkdir(parents=True, exist_ok=True)
 
     rendered = render_pdf_pages(pdf_path, deck_dir, dpi=dpi, pages=set(page_numbers))
     rendered_by_page = {int(p.stem.rsplit("_", 1)[-1]): p for p in rendered}
+
+    # Lazy imports so the plain --dry-run path doesn't need OpenAI/AWS/MySQL wired up.
+    db_ctx = None
+    openai_client = None
+    build_row = None
+    classify = None
+    insert_row_fn = None
+    conn = None
+    if write_db:
+        from openai import OpenAI
+        from shared.settings import get_settings
+        from .db import connect, ensure_table, insert_row
+        from .extract import build_row as _build_row
+        from .llm_classify import classify_from_deterministic
+
+        settings = get_settings()
+        openai_client = OpenAI(api_key=settings.openai_api_key)
+        build_row = _build_row
+        classify = classify_from_deterministic
+        insert_row_fn = insert_row
+        db_ctx = connect(
+            host=settings.mysql_host,
+            port=settings.mysql_port,
+            user=settings.mysql_user,
+            password=settings.mysql_password,
+            database=settings.mysql_database,
+        )
+        conn = db_ctx.__enter__()
+        ensure_table(conn)
+        defaults = {"codename": codename, "product": product}
+        rows_written = 0
 
     for page_num in page_numbers:
         page_png = rendered_by_page.get(page_num)
@@ -398,6 +438,24 @@ def run(pdf_path: Path, page_numbers: list[int], output_root: Path, dpi: int) ->
         (slide_dir / "report.md").write_text(report, encoding="utf-8")
         print(f"[slide {page_num}] wrote {slide_dir}")
 
+        if write_db:
+            try:
+                classified = classify(openai_client, classifier_model, plumber, camelot_result)
+            except Exception as e:
+                print(f"  ! classifier failed for slide {page_num}: {e}")
+                continue
+            (slide_dir / "classifier_output.json").write_text(
+                json.dumps(classified, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            row = build_row(classified, page_png, defaults, pdf_path, slide_dpi=dpi)
+            insert_row_fn(conn, row)
+            rows_written += 1
+            print(f"  [db] inserted brand_guidelines row for page {page_num}")
+
+    if write_db and db_ctx is not None:
+        db_ctx.__exit__(None, None, None)
+        print(f"[db] inserted {rows_written} row(s) into brand_guidelines")
+
 
 def parse_pages(spec: str) -> list[int]:
     result: set[int] = set()
@@ -422,6 +480,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pages", required=True, type=str, help="Pages to prototype, e.g. '42,110,120-122'.")
     p.add_argument("--output-dir", type=Path, default=Path("output/local_prototype"))
     p.add_argument("--dpi", type=int, default=200, help="Render DPI (higher helps Tesseract).")
+    p.add_argument(
+        "--write-db",
+        action="store_true",
+        help="After the deterministic dump, call a cheap LLM to classify roles and insert one row per slide into brand_guidelines.",
+    )
+    p.add_argument(
+        "--classifier-model",
+        default="gpt-4o-mini",
+        help="OpenAI model for the text-only classification pass (default gpt-4o-mini).",
+    )
+    p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
+    p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
     return p.parse_args()
 
 
@@ -433,7 +503,16 @@ def main() -> None:
     pages = parse_pages(args.pages)
     if not pages:
         raise SystemExit("no pages parsed from --pages")
-    run(pdf_path, pages, args.output_dir, args.dpi)
+    run(
+        pdf_path,
+        pages,
+        args.output_dir,
+        args.dpi,
+        write_db=args.write_db,
+        classifier_model=args.classifier_model,
+        codename=args.codename,
+        product=args.product,
+    )
 
 
 if __name__ == "__main__":
