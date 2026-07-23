@@ -45,10 +45,10 @@ Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather
       "idx": 1,
       "label": "hero_front",
       "bbox_pct": [0.05, 0.10, 0.95, 0.70],
-      "path": "/abs/output/images/deck/slide_042/img_01__hero_front.png"
+      "path": "slide_042_img_01__hero_front.png"
     }
   ],
-  "slide_image_path": "/abs/output/images/deck/slide_042.png",
+  "slide_image_path": "slide_042.png",
 
   "extraction": {
     "model": "gpt-4o",
@@ -130,15 +130,15 @@ output/images/<deck-stem>/
   slides.jsonl                  # one JSON record per slide
   slide_001.png                 # full-page render (source for crops)
   slide_001/                    # per-slide assets folder
-    img_01__<label>.png         # cropped visual regions, one per image on the slide
-    img_02__<label>.png
+    slide_001_img_01__<label>.png   # cropped visual regions, one per image on the slide
+    slide_001_img_02__<label>.png
     ...
   slide_002.png
   slide_002/
     ...
 ```
 
-Each `img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`img_01__1.png`, `img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in the extracted content.
+Each `slide_NNN_img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`slide_042_img_01__1.png`, `slide_042_img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in the extracted content. Filenames include the slide number so they stay unique when copied out to a flat folder — the JSON records store only the basename, so relocating the images just means pointing your reader at whichever folder holds them.
 
 ## Layout
 

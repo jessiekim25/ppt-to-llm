@@ -128,7 +128,8 @@ def build_slide_record(
         bbox = entry.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
         label = str(entry.get("label") or "").strip()
         label_slug = _slug(label)
-        filename = f"img_{idx:02d}__{label_slug}.png" if label_slug else f"img_{idx:02d}.png"
+        stem = f"slide_{slide_num:03d}_img_{idx:02d}"
+        filename = f"{stem}__{label_slug}.png" if label_slug else f"{stem}.png"
         out_path = assets_dir / filename
         _, cropped = crop_bbox_and_save(slide_png, bbox, out_path, pad_pct=0.10)
         if not cropped:
@@ -137,7 +138,7 @@ def build_slide_record(
         image_entry: dict = {
             "idx": idx,
             "bbox_pct": [float(x) for x in bbox],
-            "path": str(out_path.resolve()),
+            "path": filename,
         }
         if label:
             image_entry["label"] = label
@@ -165,7 +166,7 @@ def build_slide_record(
         record["tables"] = tables
     if images:
         record["images"] = images
-    record["slide_image_path"] = str(slide_png.resolve())
+    record["slide_image_path"] = slide_png.name
     record["extraction"] = extraction_meta
     return record
 
