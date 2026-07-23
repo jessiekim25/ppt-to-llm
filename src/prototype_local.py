@@ -4,6 +4,10 @@ Goal: run cheap local tools on a few slides and dump each stage's raw output sid
 so we can eyeball how much of the current LLM-only pipeline the deterministic path already covers
 before deciding what still needs an LLM.
 
+Deterministic stages here are text-only — no font size, no font name, no heading
+classification. Deciding what is title vs sub-section vs subheader stays with the LLM;
+this tool just hands it the words (with positions so it can reason about layout).
+
 Run:
     python -m src.prototype_local \\
       --pdf "...Miracle...pdf.zip" \\
@@ -13,8 +17,8 @@ Run:
 Per page, writes:
     output/local_prototype/<deck-stem>/slide_042/
         page.png                  full-page render (source for overlays and OCR)
-        plumber_words.json        raw pdfplumber words (position + font + size)
-        plumber_blocks.json       words clustered into blocks with heading guess
+        plumber_text.txt          plain reading-order text from pdfplumber
+        plumber_blocks.json       text blocks (text + bbox) clustered by proximity
         plumber_tables.json       pdfplumber's built-in table extractor
         plumber_images.json       embedded raster images pdfplumber sees
         camelot_lattice.json      Camelot lattice-flavor tables (bordered)
@@ -31,8 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -57,19 +60,18 @@ except ImportError:  # pragma: no cover
     pytesseract = None
 
 
-# ---------- pdfplumber: words -> blocks with heading detection ----------
+# ---------- pdfplumber: words -> text blocks (text + position only) ----------
 
 @dataclass
 class Block:
+    """A cluster of adjacent lines. Just text and its bbox — no font info, no
+    heading tags. The LLM decides what role each block plays on the slide."""
+
     text: str
     x0: float
     top: float
     x1: float
     bottom: float
-    font_size: float
-    fontname: str
-    is_heading: bool = False
-    heading_level: int = 0  # 1 = biggest, 2 = medium, 3 = body-ish
     line_count: int = 1
 
 
@@ -95,30 +97,18 @@ def _cluster_words_into_lines(words: list[dict], y_tol: float = 3.0) -> list[lis
 
 
 def _lines_to_blocks(lines: list[list[dict]], gap_tol: float = 6.0) -> list[Block]:
-    """Merge consecutive lines that share font size and sit close together into a block."""
-    if not lines:
-        return []
+    """Merge consecutive lines that sit close together vertically into a block.
 
-    def line_font_size(line: list[dict]) -> float:
-        sizes = [float(w.get("size", 0.0)) for w in line if w.get("size")]
-        return round(statistics.median(sizes), 1) if sizes else 0.0
-
-    def line_fontname(line: list[dict]) -> str:
-        names = [w.get("fontname", "") for w in line if w.get("fontname")]
-        return max(set(names), key=names.count) if names else ""
-
-    def line_text(line: list[dict]) -> str:
-        return " ".join(w["text"] for w in line).strip()
-
+    Grouping is on vertical proximity only — deliberately no font-based logic, so
+    downstream doesn't accidentally start reasoning about typography here.
+    """
     blocks: list[Block] = []
     for line in lines:
         if not line:
             continue
-        text = line_text(line)
+        text = " ".join(w["text"] for w in line).strip()
         if not text:
             continue
-        size = line_font_size(line)
-        fname = line_fontname(line)
         top = min(w["top"] for w in line)
         bottom = max(w["bottom"] for w in line)
         x0 = min(w["x0"] for w in line)
@@ -126,36 +116,16 @@ def _lines_to_blocks(lines: list[list[dict]], gap_tol: float = 6.0) -> list[Bloc
 
         if blocks:
             prev = blocks[-1]
-            same_size = abs(prev.font_size - size) < 0.5
-            same_font = prev.fontname == fname
             vertical_gap = top - prev.bottom
-            if same_size and same_font and 0 <= vertical_gap <= gap_tol:
+            if 0 <= vertical_gap <= gap_tol:
                 prev.text = f"{prev.text}\n{text}"
                 prev.bottom = bottom
                 prev.x0 = min(prev.x0, x0)
                 prev.x1 = max(prev.x1, x1)
                 prev.line_count += 1
                 continue
-        blocks.append(Block(text=text, x0=x0, top=top, x1=x1, bottom=bottom, font_size=size, fontname=fname))
+        blocks.append(Block(text=text, x0=x0, top=top, x1=x1, bottom=bottom))
     return blocks
-
-
-def _tag_headings(blocks: list[Block]) -> None:
-    """Mark blocks whose font size sits well above the body-text median as headings."""
-    sizes = [b.font_size for b in blocks if b.font_size > 0 and b.line_count <= 2]
-    if not sizes:
-        return
-    body = statistics.median(sizes)
-    for b in blocks:
-        if b.font_size >= body * 1.6:
-            b.is_heading = True
-            b.heading_level = 1
-        elif b.font_size >= body * 1.25:
-            b.is_heading = True
-            b.heading_level = 2
-        elif "bold" in b.fontname.lower() and b.line_count <= 2:
-            b.is_heading = True
-            b.heading_level = 3
 
 
 def extract_plumber(pdf_path: Path, page_number: int) -> dict[str, Any]:
@@ -165,26 +135,17 @@ def extract_plumber(pdf_path: Path, page_number: int) -> dict[str, Any]:
         if page_number < 1 or page_number > len(pdf.pages):
             return {"error": f"page {page_number} out of range (pdf has {len(pdf.pages)})"}
         page = pdf.pages[page_number - 1]
-        words = page.extract_words(
-            keep_blank_chars=False,
-            use_text_flow=False,
-            extra_attrs=["size", "fontname"],
-        )
+        words = page.extract_words(keep_blank_chars=False, use_text_flow=False)
         lines = _cluster_words_into_lines(words)
         blocks = _lines_to_blocks(lines)
-        _tag_headings(blocks)
-
-        tables = page.extract_tables() or []
-        images = page.images or []
-
         return {
             "page_size": {"width": float(page.width), "height": float(page.height)},
-            "words": words,
+            "text": page.extract_text() or "",
             "blocks": [asdict(b) for b in blocks],
-            "tables": tables,
+            "tables": page.extract_tables() or [],
             "images": [
                 {k: v for k, v in im.items() if k in {"x0", "y0", "x1", "y1", "width", "height", "name"}}
-                for im in images
+                for im in (page.images or [])
             ],
         }
 
@@ -260,8 +221,7 @@ def draw_block_overlay(page_png: Path, out_png: Path, blocks: list[dict], page_s
             (b["x0"], b["top"], b["x1"], b["bottom"]),
             page_size["width"], page_size["height"], w, h, y_flip=False,
         )
-        color = (220, 30, 30) if b.get("is_heading") else (30, 120, 220)
-        draw.rectangle(px, outline=color, width=2)
+        draw.rectangle(px, outline=(30, 120, 220), width=2)
     img.save(out_png)
 
 
@@ -289,17 +249,17 @@ def draw_table_overlay(page_png: Path, out_png: Path, camelot_result: dict, page
 def render_report(page_num: int, plumber: dict, camelot_result: dict, tesseract: dict) -> str:
     lines: list[str] = [f"# Slide {page_num} — local-tools extraction\n"]
 
-    lines.append("## pdfplumber blocks (heading-tagged)\n")
+    lines.append("## pdfplumber text blocks\n")
     if plumber.get("error"):
         lines.append(f"> ERROR: {plumber['error']}\n")
     else:
         blocks = plumber.get("blocks", [])
-        lines.append(f"_{len(blocks)} blocks_\n")
-        for b in blocks:
-            marker = "H" + str(b["heading_level"]) if b["is_heading"] else "  "
-            first_line = b["text"].splitlines()[0][:120]
-            more = " …" if len(b["text"].splitlines()) > 1 or len(first_line) < len(b["text"]) else ""
-            lines.append(f"- `{marker}` `size={b['font_size']:.1f}` `{b['fontname'][:30]}` — {first_line}{more}")
+        lines.append(f"_{len(blocks)} blocks in reading order_\n")
+        for i, b in enumerate(blocks, 1):
+            preview = b["text"].replace("\n", " / ")
+            if len(preview) > 160:
+                preview = preview[:160] + "…"
+            lines.append(f"{i}. {preview}")
         lines.append("")
 
     lines.append("## pdfplumber tables (built-in)\n")
@@ -349,44 +309,39 @@ def render_report(page_num: int, plumber: dict, camelot_result: dict, tesseract:
         lines.append(text[:2000] + ("…" if len(text) > 2000 else ""))
         lines.append("```\n")
 
-    lines.append("## Residue for the LLM (things the deterministic stack likely still needs help with)\n")
+    lines.append("## Residue for the LLM (what still needs a model)\n")
     residue = classify_residue(plumber, camelot_result)
-    if not residue:
-        lines.append("_none obvious from raw counts — eyeball the overlays to confirm._")
-    else:
-        for r in residue:
-            lines.append(f"- {r}")
+    for r in residue:
+        lines.append(f"- {r}")
     lines.append("")
 
     return "\n".join(lines)
 
 
 def classify_residue(plumber: dict, camelot_result: dict) -> list[str]:
-    """Heuristics for what a downstream LLM would still need to resolve."""
-    notes: list[str] = []
+    """What a downstream LLM still has to do on top of the deterministic output."""
+    notes: list[str] = [
+        "classify each text block by role (product / codename / section / sub_section / detail / model / subheader)",
+        "group subheaders and their descriptive body text; handle nested subheaders (children)",
+    ]
+
     blocks = plumber.get("blocks", []) if isinstance(plumber, dict) else []
     if not blocks:
-        notes.append("pdfplumber found no text blocks — page is likely a rasterized image; OCR fallback path only.")
-    else:
-        headings = [b for b in blocks if b.get("is_heading")]
-        if not headings:
-            notes.append("no font-size-based heading detected — LLM needed to identify slide title / section.")
-        elif len(headings) > 8:
-            notes.append(f"{len(headings)} heading candidates — LLM needed to pick main title vs sub-headings.")
+        notes.append("pdfplumber found no text blocks — page is likely rasterized; rely on Tesseract for the text pass.")
 
     plumber_tables = plumber.get("tables", []) if isinstance(plumber, dict) else []
     cam_lat = camelot_result.get("lattice") if isinstance(camelot_result.get("lattice"), list) else []
     cam_str = camelot_result.get("stream") if isinstance(camelot_result.get("stream"), list) else []
     if not plumber_tables and not cam_lat and not cam_str:
-        notes.append("no tables detected by any tool — if the slide has a Format table, its cells are drawn as shapes/badges (needs LLM or vector-shape analyzer).")
+        notes.append("no tables detected by any tool — if the slide has a Format table, its cells are drawn as shapes/badges and still need the LLM (or a vector-shape reader).")
     elif cam_lat and cam_str:
         low_acc = [t for t in cam_lat if (t.get("accuracy") or 0) < 80] + [t for t in cam_str if (t.get("accuracy") or 0) < 80]
         if low_acc:
-            notes.append(f"{len(low_acc)} table(s) extracted with <80% accuracy — LLM may need to reconcile.")
+            notes.append(f"{len(low_acc)} table(s) extracted with <80% accuracy — LLM may need to reconcile lattice vs stream.")
 
     images = plumber.get("images", []) if isinstance(plumber, dict) else []
     if not images:
-        notes.append("no embedded raster images — visual regions are vector-drawn; still need render+bbox path from the LLM (as current pipeline does).")
+        notes.append("no embedded raster images — visual regions are vector-drawn; keep the current render+bbox path for image crops.")
 
     return notes
 
@@ -408,12 +363,11 @@ def run(pdf_path: Path, page_numbers: list[int], output_root: Path, dpi: int) ->
         slide_dir = deck_dir / f"slide_{page_num:03d}"
         slide_dir.mkdir(parents=True, exist_ok=True)
 
-        # copy page render into slide folder for a self-contained bundle
         (slide_dir / "page.png").write_bytes(page_png.read_bytes())
 
         print(f"[slide {page_num}] pdfplumber...", flush=True)
         plumber = extract_plumber(pdf_path, page_num)
-        (slide_dir / "plumber_words.json").write_text(json.dumps(plumber.get("words", []), ensure_ascii=False, indent=2))
+        (slide_dir / "plumber_text.txt").write_text(plumber.get("text", "") or "", encoding="utf-8")
         (slide_dir / "plumber_blocks.json").write_text(json.dumps(plumber.get("blocks", []), ensure_ascii=False, indent=2))
         (slide_dir / "plumber_tables.json").write_text(json.dumps(plumber.get("tables", []), ensure_ascii=False, indent=2))
         (slide_dir / "plumber_images.json").write_text(json.dumps(plumber.get("images", []), ensure_ascii=False, indent=2))
@@ -431,7 +385,6 @@ def run(pdf_path: Path, page_numbers: list[int], output_root: Path, dpi: int) ->
         tess = extract_tesseract(slide_dir / "page.png")
         (slide_dir / "tesseract_full.txt").write_text(tess.get("text", "") or f"[error] {tess.get('error', '')}")
 
-        # overlays
         if isinstance(plumber, dict) and plumber.get("page_size"):
             try:
                 draw_block_overlay(slide_dir / "page.png", slide_dir / "overlay_blocks.png",
