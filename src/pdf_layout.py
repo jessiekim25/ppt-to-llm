@@ -29,6 +29,8 @@ class TextLine:
     bbox_pct: tuple[float, float, float, float]  # (x0, y0, x1, y1), fractions of page
     text: str
     size: float | None
+    font: str = ""
+    bold: bool = False
 
 
 @dataclass
@@ -78,13 +80,15 @@ def _union(parent, x, y):
 def _walk(node, texts: list, shapes: list) -> None:
     if isinstance(node, LTTextLine):
         size = None
+        font = ""
         for c in node:
             if isinstance(c, LTChar):
                 size = c.size
+                font = c.fontname or ""
                 break
         text = node.get_text().strip()
         if text:
-            texts.append((node.bbox, text, size))
+            texts.append((node.bbox, text, size, font))
         return
     if isinstance(node, (LTImage, LTCurve, LTRect, LTLine)):
         shapes.append((node.bbox, type(node).__name__))
@@ -145,7 +149,7 @@ def _attach_labels(
         best = ""
         best_dist: float | None = None
 
-        for tbbox, ttext, _size in text_lines_pdf:
+        for tbbox, ttext, _size, _font in text_lines_pdf:
             if len(ttext) > 60:
                 continue
             tx0, ty0, tx1, ty1 = tbbox
@@ -155,7 +159,7 @@ def _attach_labels(
                     best_dist, best = d, ttext
 
         if not best:
-            for tbbox, ttext, _size in text_lines_pdf:
+            for tbbox, ttext, _size, _font in text_lines_pdf:
                 if len(ttext) > 4:
                     continue
                 tx0, ty0, tx1, ty1 = tbbox
@@ -186,8 +190,14 @@ def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
         labeled.sort(key=lambda cl: (-cl[0][3], cl[0][0]))
 
         text_lines = [
-            TextLine(bbox_pct=_to_pct_top_left(b, page_w, page_h), text=t, size=s)
-            for (b, t, s) in texts_raw
+            TextLine(
+                bbox_pct=_to_pct_top_left(b, page_w, page_h),
+                text=t,
+                size=s,
+                font=f,
+                bold="bold" in (f or "").lower(),
+            )
+            for (b, t, s, f) in texts_raw
         ]
         figures = [
             Figure(bbox_pct=_to_pct_top_left(b, page_w, page_h), label=lbl)

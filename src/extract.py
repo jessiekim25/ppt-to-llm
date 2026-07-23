@@ -8,7 +8,7 @@ from PIL import Image
 
 from shared.settings import get_settings
 
-from .llm import extract_slide
+from .llm import build_payload, extract_slide
 from .pdf_layout import Figure, extract_page_layout
 from .pdf_utils import crop_and_save, page_count, render_page, resolve_pdf_input
 
@@ -113,14 +113,26 @@ def _save_figure_crops(
     return images
 
 
+def _crop_slide_figures(
+    figures: list[Figure],
+    pdf_path: Path,
+    page_num: int,
+    dpi: int,
+    assets_dir: Path,
+) -> list[dict]:
+    """Render the page in memory (only if there are figures) and save each crop."""
+    if not figures:
+        return []
+    rendered = render_page(pdf_path, page_num, dpi=dpi)
+    return _save_figure_crops(figures, rendered, page_num, assets_dir)
+
+
 def build_slide_record(
     extracted: dict,
     page_num: int,
-    figures: list[Figure],
-    rendered: Image.Image,
+    images: list[dict],
     defaults: dict,
     doc_id: str,
-    assets_dir: Path,
 ) -> dict:
     fields: dict = {}
     for f in SLIDE_FIELDS:
@@ -133,12 +145,6 @@ def build_slide_record(
     detail = str(extracted.get("detail", "") or "").strip()
     subheaders = [c for c in (_clean_subheader(x) for x in (extracted.get("subheaders") or [])) if c]
     tables = _clean_tables(extracted.get("tables") or [])
-
-    images = _save_figure_crops(figures, rendered, page_num, assets_dir) if figures else []
-    if images:
-        print(f"  [images] {len(images)} figure crop(s) from pdfminer")
-    else:
-        print("  [images] no figures detected on this slide")
 
     record: dict = {
         "doc_id": doc_id,
@@ -221,22 +227,25 @@ def main() -> None:
     for i, page_num in enumerate(page_nums, start=1):
         print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
-            rendered = render_page(pdf_path, page_num, dpi=args.dpi)
             layout = extract_page_layout(pdf_path, page_num)
-            data = extract_slide(client, settings.openai_model, rendered)
+            payload = build_payload(layout, page_num)
+            data = extract_slide(client, settings.openai_model, payload)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
         assets_dir = per_deck_dir / f"slide_{page_num:03d}"
+        images = _crop_slide_figures(layout.figures, pdf_path, page_num, args.dpi, assets_dir)
+        if images:
+            print(f"  [images] {len(images)} figure crop(s) from pdfminer")
+        else:
+            print("  [images] no figures detected on this slide")
         records.append(
             build_slide_record(
                 data,
                 page_num=page_num,
-                figures=layout.figures,
-                rendered=rendered,
+                images=images,
                 defaults=defaults,
                 doc_id=doc_id,
-                assets_dir=assets_dir,
             )
         )
 

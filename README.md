@@ -56,12 +56,12 @@ Notes:
 
 ## How it works
 
-1. For each slide, walk the PDF with `pdfminer.six` to collect text lines and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions and attach the nearest short text below each cluster as a caption label.
-2. Render the slide to PNG in memory with `pypdfium2` and send it to an OpenAI vision model (`gpt-4o` by default) with a strict JSON extraction prompt that returns structured text fields (product, codename, section, subheaders, tables, detail).
-3. Crop the in-memory render to each pdfminer-detected figure bbox and save as `slide_NNN_img_NN__<label>.png` in a per-slide assets folder. No full-page PNG is saved — only the figure crops.
+1. For each slide, walk the PDF with `pdfminer.six` to collect text lines (with bboxes, font size, bold flag) and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions and attach the nearest short text below each cluster as a caption label.
+2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM reconstructs the layout hierarchy (product, codename, section, subheaders with nested children, tables) from typography and bbox geometry alone. No image is sent to the LLM.
+3. When the slide has figures, render the page to PNG in memory with `pypdfium2`, crop each pdfminer-detected figure bbox, and save as `slide_NNN_img_NN__<label>.png` in a per-slide assets folder. Slides with no figures don't render at all.
 4. Write one JSON record per slide, appended to `<output-dir>/<deck-stem>/slides.jsonl`.
 
-Image detection is done geometrically by pdfminer, not by the LLM — this handles vector-drawn "images" (clip-masked shapes, paths, fills) that raster-only extractors miss, and eliminates the LLM's fuzzy bbox guesses.
+Both text and figure extraction are geometric (pdfminer) — the LLM only handles layout interpretation. This eliminates vision-token cost, keeps the slide image inside your environment, and handles vector-drawn "images" (clip-masked shapes, paths, fills) that raster-only extractors miss.
 
 ## Setup
 
@@ -137,7 +137,7 @@ src/
   extract.py         # CLI entry point; builds slide records and writes slides.jsonl
   pdf_layout.py      # pdfminer.six layout: text lines + clustered figure regions
   pdf_utils.py       # in-memory page rendering + crop helpers
-  llm.py             # OpenAI vision extraction (text/subheaders/tables only)
+  llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass
