@@ -1,22 +1,22 @@
 import argparse
+import hashlib
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import OpenAI
 
 from shared.settings import get_settings
 
-from .db import connect, ensure_table, insert_row
 from .llm import extract_slide
 from .pdf_utils import (
     crop_bbox_and_save,
-    extract_page_images_clustered,
     render_pdf_pages,
     resolve_pdf_input,
 )
 
-FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
+SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
 
 
 def _slug(text: str, max_len: int = 60) -> str:
@@ -27,56 +27,47 @@ def _slug(text: str, max_len: int = 60) -> str:
     return text[:max_len].strip("_-")
 
 
-def _render_subheader(sh: dict, depth: int = 2) -> str:
-    """Render one subheader (and its nested children) as a markdown-ish block.
-
-    depth=2 -> "## title", depth=3 -> "### title", and so on. Nested children get
-    depth+1 so downstream readers can rebuild the slide's section hierarchy.
-    """
-    title = str(sh.get("title", "")).strip()
-    sh_detail = str(sh.get("detail", "")).strip()
-    sh_tables = _format_tables(sh.get("tables") or [])
-    children = sh.get("children") or []
-
-    block: list[str] = []
+def _clean_subheader(sh: dict) -> dict | None:
+    """Normalize an LLM subheader entry, dropping empties and recursing into children."""
+    if not isinstance(sh, dict):
+        return None
+    title = str(sh.get("title", "") or "").strip()
+    detail = str(sh.get("detail", "") or "").strip()
+    tables = _clean_tables(sh.get("tables") or [])
+    children_raw = sh.get("children") or []
+    children = [c for c in (_clean_subheader(x) for x in children_raw) if c]
+    if not (title or detail or tables or children):
+        return None
+    out: dict = {}
     if title:
-        prefix = "#" * max(2, min(depth, 6))
-        block.append(f"{prefix} {title}")
-    if sh_detail:
-        block.append(sh_detail)
-    if sh_tables:
-        block.append("\n".join(sh_tables))
-    for child in children:
-        child_block = _render_subheader(child, depth=depth + 1)
-        if child_block:
-            block.append(child_block)
-    return "\n\n".join(block)
+        out["title"] = title
+    if detail:
+        out["detail"] = detail
+    if tables:
+        out["tables"] = tables
+    if children:
+        out["children"] = children
+    return out
 
 
-def _format_tables(tables: list[dict]) -> list[str]:
-    """Render each table as its actual "col1 | col2 | ..." header row plus cell rows.
-    Multi-line cells are collapsed to " / " so each row stays on one line."""
-    def cell(v: object) -> str:
-        parts = [p.strip() for p in str(v).splitlines() if p.strip()]
-        return " / ".join(parts)
-
-    out: list[str] = []
-    for i, t in enumerate(tables or []):
+def _clean_tables(tables: list) -> list[dict]:
+    out: list[dict] = []
+    for t in tables or []:
         if not isinstance(t, dict):
             continue
-        if i > 0:
-            out.append("")
-        title = str(t.get("title", "")).strip()
-        if title:
-            out.append(title)
+        title = str(t.get("title", "") or "").strip()
         columns = [str(c).strip() for c in (t.get("columns") or [])]
+        rows = [[str(c) for c in (row or [])] for row in (t.get("rows") or [])]
+        if not (columns or rows):
+            continue
+        entry: dict = {}
+        if title:
+            entry["title"] = title
         if columns:
-            out.append(" | ".join(columns))
-        for row in t.get("rows") or []:
-            cells = [cell(c) for c in row]
-            if columns and len(cells) < len(columns):
-                cells += [""] * (len(columns) - len(cells))
-            out.append(" | ".join(cells))
+            entry["columns"] = columns
+        if rows:
+            entry["rows"] = rows
+        out.append(entry)
     return out
 
 
@@ -98,12 +89,28 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, slide_dpi: int = 150) -> dict:
-    row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
-    for k, v in defaults.items():
-        if not row.get(k) and v:
-            row[k] = v
-    row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
+def build_slide_record(
+    extracted: dict,
+    slide_png: Path,
+    defaults: dict,
+    doc_id: str,
+    source_file: Path,
+    extraction_meta: dict,
+) -> dict:
+    """Turn one LLM extraction into a slide record matching the JSONL schema."""
+    slide_num = int(slide_png.stem.rsplit("_", 1)[-1])
+
+    fields: dict = {}
+    for f in SLIDE_FIELDS:
+        value = str(extracted.get(f, "") or "").strip()
+        if not value and defaults.get(f):
+            value = defaults[f]
+        if value:
+            fields[f] = value
+
+    detail = str(extracted.get("detail", "") or "").strip()
+    subheaders = [c for c in (_clean_subheader(x) for x in (extracted.get("subheaders") or [])) if c]
+    tables = _clean_tables(extracted.get("tables") or [])
 
     # Image extraction: the LLM returns one entry per distinct visual region
     # on the slide with a label and a generous bbox_pct. We crop the rendered
@@ -111,54 +118,61 @@ def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, 
     # save with a header-slugged filename. Native pypdfium2 image extraction
     # doesn't work for these decks because most "images" are vector-drawn
     # (paths and shapes), not embedded rasters.
-    page_num = int(slide_png.stem.rsplit("_", 1)[-1])
     assets_dir = slide_png.parent / slide_png.stem
     assets_dir.mkdir(parents=True, exist_ok=True)
 
-    llm_images = extracted.get("images") or []
-    saved_names: list[str] = []
-    for idx, entry in enumerate(llm_images, start=1):
+    images: list[dict] = []
+    for idx, entry in enumerate(extracted.get("images") or [], start=1):
         if not isinstance(entry, dict):
             continue
         bbox = entry.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
         label = str(entry.get("label") or "").strip()
         label_slug = _slug(label)
         filename = f"img_{idx:02d}__{label_slug}.png" if label_slug else f"img_{idx:02d}.png"
-        out = assets_dir / filename
-        _, cropped = crop_bbox_and_save(slide_png, bbox, out, pad_pct=0.10)
-        if cropped:
-            saved_names.append(out.name)
-        else:
+        out_path = assets_dir / filename
+        _, cropped = crop_bbox_and_save(slide_png, bbox, out_path, pad_pct=0.10)
+        if not cropped:
             print(f"  ! image {idx}: bad bbox {bbox!r}, skipping")
+            continue
+        image_entry: dict = {
+            "idx": idx,
+            "bbox_pct": [float(x) for x in bbox],
+            "path": str(out_path.resolve()),
+        }
+        if label:
+            image_entry["label"] = label
+        images.append(image_entry)
 
-    if saved_names:
-        print(f"  [images] {len(saved_names)} LLM-directed crop(s): {', '.join(saved_names)}")
+    if images:
+        print(f"  [images] {len(images)} LLM-directed crop(s)")
     else:
         (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
         print("  [images] no image regions returned; saved full slide.png as fallback")
 
-    parts: list[str] = []
-    slide_detail = row.get("detail", "").strip()
-    if slide_detail:
-        parts.append(slide_detail)
-
-    slide_table_lines = _format_tables(extracted.get("tables") or [])
-    if slide_table_lines:
-        parts.append("\n".join(slide_table_lines))
-
-    for sh in extracted.get("subheaders") or []:
-        rendered = _render_subheader(sh, depth=2)
-        if rendered:
-            parts.append(rendered)
-
-    row["detail"] = "\n\n".join(parts)
-    row["image_path"] = str(assets_dir.resolve())
-    return row
+    record: dict = {
+        "doc_id": doc_id,
+        "source_file": str(source_file),
+        "source_type": source_file.suffix.lower().lstrip(".") or "pdf",
+        "slide_num": slide_num,
+        "slide_id": f"{doc_id}#{slide_num:03d}",
+    }
+    record.update(fields)
+    if detail:
+        record["detail"] = detail
+    if subheaders:
+        record["subheaders"] = subheaders
+    if tables:
+        record["tables"] = tables
+    if images:
+        record["images"] = images
+    record["slide_image_path"] = str(slide_png.resolve())
+    record["extraction"] = extraction_meta
+    return record
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Convert a campaign visual guideline PDF into rows in jihwi.brand_guidelines.",
+        description="Convert a campaign visual guideline PDF into per-slide JSON records for LLM retrieval.",
     )
     p.add_argument(
         "--pdf",
@@ -170,7 +184,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("output/images"),
-        help="Directory that will receive rendered slide PNGs (a per-deck subfolder is created).",
+        help="Directory that will receive rendered slide PNGs and the per-deck slides.jsonl.",
     )
     p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
@@ -184,9 +198,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print extracted rows as JSONL to stdout instead of writing to MySQL.",
+        help="Print records to stdout instead of writing slides.jsonl.",
     )
     return p.parse_args()
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return f"sha256:{h.hexdigest()}"
 
 
 def main() -> None:
@@ -209,7 +231,14 @@ def main() -> None:
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"codename": args.codename, "product": args.product}
 
-    rows: list[dict] = []
+    doc_id = _slug(pdf_path.stem)
+    extraction_meta = {
+        "model": settings.openai_model,
+        "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_hash": _file_sha256(pdf_path),
+    }
+
+    records: list[dict] = []
     for i, img in enumerate(image_paths, start=1):
         print(f"[extract] slide {i}/{len(image_paths)}: {img.name}")
         try:
@@ -217,24 +246,28 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        rows.append(build_row(data, img, defaults, pdf_path, slide_dpi=args.dpi))
+        records.append(
+            build_slide_record(
+                data,
+                img,
+                defaults,
+                doc_id=doc_id,
+                source_file=pdf_path,
+                extraction_meta=extraction_meta,
+            )
+        )
 
     if args.dry_run:
-        for r in rows:
+        for r in records:
             print(json.dumps(r, ensure_ascii=False))
         return
 
-    with connect(
-        host=settings.mysql_host,
-        port=settings.mysql_port,
-        user=settings.mysql_user,
-        password=settings.mysql_password,
-        database=settings.mysql_database,
-    ) as conn:
-        ensure_table(conn)
-        for r in rows:
-            insert_row(conn, r)
-    print(f"[db] inserted {len(rows)} rows into jihwi.brand_guidelines")
+    out_path = per_deck_dir / "slides.jsonl"
+    with out_path.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False))
+            f.write("\n")
+    print(f"[jsonl] wrote {len(records)} slide record(s) to {out_path}")
 
 
 if __name__ == "__main__":

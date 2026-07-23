@@ -1,42 +1,75 @@
 # ppt-to-llm
 
-Convert a Samsung campaign visual identity PDF into structured rows in `jihwi.brand_guidelines` — one row per slide, plus per-slide image crops on disk — so an LLM (or a plain SQL query) can retrieve any slide's content instantly.
+Convert a Samsung campaign visual identity PDF (or PPT export) into one structured **JSON record per slide**, written as a per-deck `slides.jsonl` file alongside per-slide image crops. The JSONL is designed to be fed straight to an LLM (or indexed for retrieval) without a database in the middle — layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
 
-Each slide becomes one row with these fields:
+## Slide record schema
 
-| column        | meaning                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------- |
-| `product`     | product series/line the slide belongs to (e.g. `Galaxy S26`)                                |
-| `codename`    | campaign project code name                                                                  |
-| `section`     | top-left section label of the slide (one of the four deck sections)                         |
-| `sub_section` | slide title / heading                                                                       |
-| `detail`      | slide body text — subheaders rendered as `## Heading`, nested children as `###`, plus tables |
-| `model`       | specific product model shown on the slide (e.g. `Galaxy S26 Ultra`)                          |
-| `image_path`  | absolute path of the per-slide assets folder containing the cropped images                  |
-| `page`        | source slide number in the PDF (e.g. `42`)                                                  |
+Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather than `null` — so a title slide with no tables just has no `tables` key.
+
+```json
+{
+  "doc_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6",
+  "source_file": "/path/to/deck.pdf",
+  "source_type": "pdf",
+  "slide_num": 42,
+  "slide_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6#042",
+
+  "product": "Galaxy S26",
+  "codename": "Miracle",
+  "model": "Galaxy S26 Ultra",
+  "section": "01 Brand Basics",
+  "sub_section": "Hero Key Visual",
+
+  "detail": "Slide-level body text that isn't tied to any subheader.",
+
+  "subheaders": [
+    {
+      "title": "4:1 proportion",
+      "detail": "...",
+      "children": [
+        { "title": "How to build layout", "detail": "1. ...\n2. ..." }
+      ]
+    }
+  ],
+
+  "tables": [
+    {
+      "title": "Approved backgrounds",
+      "columns": ["Surface", "Hex", "Usage"],
+      "rows": [["Primary", "#111111", "Global"]]
+    }
+  ],
+
+  "images": [
+    {
+      "idx": 1,
+      "label": "hero_front",
+      "bbox_pct": [0.05, 0.10, 0.95, 0.70],
+      "path": "/abs/output/images/deck/slide_042/img_01__hero_front.png"
+    }
+  ],
+  "slide_image_path": "/abs/output/images/deck/slide_042.png",
+
+  "extraction": {
+    "model": "gpt-4o",
+    "extracted_at": "2026-07-23T10:15:00+00:00",
+    "source_hash": "sha256:..."
+  }
+}
+```
+
+Notes:
+
+- **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
+- **`subheaders`** stays recursive (subheaders can have `children` with the same schema), so nested layout survives round-trips.
+- **`extraction.source_hash`** lets you re-run only slides from decks whose file hash changed after a prompt/model bump.
 
 ## How it works
 
 1. Render each PDF page to PNG with `pypdfium2` (pure-Python, no Poppler needed).
 2. Send each PNG to an OpenAI vision model (`gpt-4o` by default) with a strict JSON extraction prompt that returns structured text fields plus `images[]` (one entry per distinct visual region with a label + bbox).
 3. Crop the rendered slide to each `bbox_pct` with generous padding and save it as `img_NN__<label>.png` in a per-slide assets folder.
-4. Insert one row per slide into `jihwi.brand_guidelines`; `image_path` points at the assets folder.
-
-Subheaders in `detail` are rendered hierarchically so a downstream LLM can reconstruct slide layout:
-
-```
-## 4:1 proportion
-
-### How to build layout:
-1. ...
-2. ...
-
-## 6:1 proportion
-
-### How to build layout:
-1. ...
-2. ...
-```
+4. Write one JSON record per slide, appended to `<output-dir>/<deck-stem>/slides.jsonl`.
 
 ## Setup
 
@@ -47,16 +80,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-All secrets live in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`. This project reads from two existing secrets:
+The OpenAI key lives in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`:
 
-| secret name | required keys                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------ |
-| `MySQL`     | `RDS_HOSTNAME`, `RDS_USERNAME_TESTDB`, `RDS_PASSWORD_TESTDB`, `RDS_DB_NAME`, `RDS_PORT` (optional; 3306) |
-| `LLMKeys`   | `OPENAI_API_KEY`, `OPENAI_MODEL` (optional; defaults to `gpt-4o`)                                       |
+| secret name | required keys                                              |
+| ----------- | ---------------------------------------------------------- |
+| `LLMKeys`   | `OPENAI_API_KEY`, `OPENAI_MODEL` (optional; default `gpt-4o`) |
 
-Override the secret names with the `MYSQL_SECRET_NAME` / `LLM_SECRET_NAME` env vars if needed. See `secrets.example.json` for the expected shape.
+Override the secret name with `LLM_SECRET_NAME` if needed. See `secrets.example.json` for the expected shape.
 
-AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these secrets via `shared/aws_secrets.get_secret()` and returns a frozen `Settings` dataclass.
+AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile.
 
 ## Run against the Galaxy Miracle guideline
 
@@ -77,13 +109,13 @@ python -m src.extract ^
 
 | flag           | default          | notes                                                                                     |
 | -------------- | ---------------- | ----------------------------------------------------------------------------------------- |
-| `--output-dir` | `output/images`  | Rendered slide PNGs and per-slide assets folders land here.                               |
-| `--codename`   | `""`            | Fallback for the `codename` column when not visible on a slide.                           |
-| `--product`    | `""`            | Fallback for the `product` column when not visible on a slide.                            |
+| `--output-dir` | `output/images`  | Rendered slide PNGs, per-slide assets folders, and `slides.jsonl` all land here.          |
+| `--codename`   | `""`             | Fallback for the `codename` field when not visible on a slide.                            |
+| `--product`    | `""`             | Fallback for the `product` field when not visible on a slide.                             |
 | `--dpi`        | `150`            | Render DPI for slide PNGs.                                                                |
 | `--limit`      | `0` (all)        | Only process the first N slides. Ignored if `--pages` is set.                             |
-| `--pages`      | `""` (all)      | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
-| `--dry-run`    | off              | Print extracted rows as JSONL to stdout instead of writing to MySQL.                      |
+| `--pages`      | `""` (all)       | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
+| `--dry-run`    | off              | Print records to stdout instead of writing `slides.jsonl`.                                |
 
 ### Try a few slides first
 
@@ -91,14 +123,13 @@ python -m src.extract ^
 python -m src.extract --pdf "...pdf.zip" --pages 10-15 --dry-run
 ```
 
-`--dry-run` prints one JSON object per slide to stdout instead of touching MySQL — useful for eyeballing extraction quality before running the whole deck.
-
 ## Output layout
 
 ```
 output/images/<deck-stem>/
+  slides.jsonl                  # one JSON record per slide
   slide_001.png                 # full-page render (source for crops)
-  slide_001/                    # per-slide assets folder — image_path in the DB
+  slide_001/                    # per-slide assets folder
     img_01__<label>.png         # cropped visual regions, one per image on the slide
     img_02__<label>.png
     ...
@@ -107,20 +138,18 @@ output/images/<deck-stem>/
     ...
 ```
 
-Each `img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`img_01__1.png`, `img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in `detail`.
+Each `img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`img_01__1.png`, `img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in the extracted content.
 
 ## Layout
 
 ```
 src/
-  extract.py         # CLI entry point
+  extract.py         # CLI entry point; builds slide records and writes slides.jsonl
   pdf_utils.py       # render_pdf_pages, crop helpers
   llm.py             # OpenAI vision extraction
-  db.py              # MySQL writer
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass
-schema.sql           # jihwi.brand_guidelines DDL
 secrets.example.json # template for the AWS Secrets Manager secret payload
 requirements.txt
 ```
