@@ -3,3 +3,11 @@ pypdfium2>=4.28
 pymysql>=1.1
 boto3>=1.34
 Pillow>=10.0
+
+# Local-tools prototype (src.prototype_local). Optional at runtime — the script
+# imports each lazily and prints a clear install hint if one is missing.
+# Camelot also needs Ghostscript installed on the OS; Tesseract needs its binary
+# on PATH (https://tesseract-ocr.github.io/).
+pdfplumber>=0.11
+camelot-py[cv]>=0.11
+pytesseract>=0.3.10
