@@ -1,8 +1,9 @@
 import base64
+import io
 import json
-from pathlib import Path
 
 from openai import OpenAI
+from PIL import Image
 
 SYSTEM_PROMPT = """You extract structured data from a single slide of a Samsung campaign visual identity guideline deck.
 
@@ -59,18 +60,14 @@ Content fields:
     "tables": [ <text-only table objects that belong to this subheader, same schema as the slide-level `tables` field> ],
     "children": [ <nested subheader entries with the same schema; [] if none> ]
   }
-- images: ordered list of the distinct visual regions on the slide, in reading order (top-to-bottom, then left-to-right). Each entry is ONE composite scene — if multiple layers, mockups, or graphics visually stack or overlap to form a single visual (e.g. a product photo with an overlay logo, a phone mockup with reflection layers, an OOH billboard shot with a KV pasted on it), that stack is ONE entry, not several. Each entry:
-  {
-    "label": "<the header/title/caption text printed on the slide that names this visual, e.g. \"Galaxy S26\", \"Grid and lettermark\", \"AP(Gaming)\". If the visual is marked ONLY by a numbered gray/dark circle badge (a small circle with a digit inside) and has no other text label, use that digit as the label (e.g. \"1\", \"2\"). Otherwise empty string.>",
-    "bbox_pct": [x1, y1, x2, y2]  // fractions 0-1 of slide width/height (left, top, right, bottom). CRITICAL: draw the bbox GENEROUSLY around the whole visual — push each side outward well past where the graphic actually ends, and include any captions or small labels that sit immediately below/beside it. INCLUDE any numbered gray/dark circle badges that sit above/beside/attached to the visual — those badges tie the visual to a Format-table entry and MUST survive the crop, so extend the bbox to cover them. Err large, not tight. Two entries' bboxes may overlap slightly if the visuals are close together.
-  }
-  Return [] if the slide has no visual content at all (pure text slide).
 
 Return ONLY the JSON object. No prose, no code fences."""
 
 
-def extract_slide(client: OpenAI, model: str, image_path: Path) -> dict:
-    b64 = base64.b64encode(image_path.read_bytes()).decode()
+def extract_slide(client: OpenAI, model: str, image: Image.Image) -> dict:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
     data_url = f"data:image/png;base64,{b64}"
     response = client.chat.completions.create(
         model=model,

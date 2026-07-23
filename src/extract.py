@@ -4,15 +4,13 @@ import re
 from pathlib import Path
 
 from openai import OpenAI
+from PIL import Image
 
 from shared.settings import get_settings
 
 from .llm import extract_slide
-from .pdf_utils import (
-    crop_bbox_and_save,
-    render_pdf_pages,
-    resolve_pdf_input,
-)
+from .pdf_layout import Figure, extract_page_layout
+from .pdf_utils import crop_and_save, page_count, render_page, resolve_pdf_input
 
 SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
 
@@ -87,15 +85,43 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
+def _save_figure_crops(
+    figures: list[Figure],
+    rendered: Image.Image,
+    page_num: int,
+    assets_dir: Path,
+) -> list[dict]:
+    """Crop each pdfminer-detected figure from the rendered page image; return record entries."""
+    images: list[dict] = []
+    for idx, fig in enumerate(figures, start=1):
+        label = fig.label.strip()
+        label_slug = _slug(label)
+        stem = f"slide_{page_num:03d}_img_{idx:02d}"
+        filename = f"{stem}__{label_slug}.png" if label_slug else f"{stem}.png"
+        out_path = assets_dir / filename
+        if not crop_and_save(rendered, fig.bbox_pct, out_path):
+            print(f"  ! figure {idx}: bad bbox {fig.bbox_pct!r}, skipping")
+            continue
+        entry: dict = {
+            "idx": idx,
+            "bbox_pct": [float(x) for x in fig.bbox_pct],
+            "path": filename,
+        }
+        if label:
+            entry["label"] = label
+        images.append(entry)
+    return images
+
+
 def build_slide_record(
     extracted: dict,
-    slide_png: Path,
+    page_num: int,
+    figures: list[Figure],
+    rendered: Image.Image,
     defaults: dict,
     doc_id: str,
+    assets_dir: Path,
 ) -> dict:
-    """Turn one LLM extraction into a slide record matching the JSONL schema."""
-    slide_num = int(slide_png.stem.rsplit("_", 1)[-1])
-
     fields: dict = {}
     for f in SLIDE_FIELDS:
         value = str(extracted.get(f, "") or "").strip()
@@ -108,48 +134,16 @@ def build_slide_record(
     subheaders = [c for c in (_clean_subheader(x) for x in (extracted.get("subheaders") or [])) if c]
     tables = _clean_tables(extracted.get("tables") or [])
 
-    # Image extraction: the LLM returns one entry per distinct visual region
-    # on the slide with a label and a generous bbox_pct. We crop the rendered
-    # slide to each bbox (with a large pad on top of the LLM's own margin) and
-    # save with a header-slugged filename. Native pypdfium2 image extraction
-    # doesn't work for these decks because most "images" are vector-drawn
-    # (paths and shapes), not embedded rasters.
-    assets_dir = slide_png.parent / slide_png.stem
-    assets_dir.mkdir(parents=True, exist_ok=True)
-
-    images: list[dict] = []
-    for idx, entry in enumerate(extracted.get("images") or [], start=1):
-        if not isinstance(entry, dict):
-            continue
-        bbox = entry.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
-        label = str(entry.get("label") or "").strip()
-        label_slug = _slug(label)
-        stem = f"slide_{slide_num:03d}_img_{idx:02d}"
-        filename = f"{stem}__{label_slug}.png" if label_slug else f"{stem}.png"
-        out_path = assets_dir / filename
-        _, cropped = crop_bbox_and_save(slide_png, bbox, out_path, pad_pct=0.10)
-        if not cropped:
-            print(f"  ! image {idx}: bad bbox {bbox!r}, skipping")
-            continue
-        image_entry: dict = {
-            "idx": idx,
-            "bbox_pct": [float(x) for x in bbox],
-            "path": filename,
-        }
-        if label:
-            image_entry["label"] = label
-        images.append(image_entry)
-
+    images = _save_figure_crops(figures, rendered, page_num, assets_dir) if figures else []
     if images:
-        print(f"  [images] {len(images)} LLM-directed crop(s)")
+        print(f"  [images] {len(images)} figure crop(s) from pdfminer")
     else:
-        (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
-        print("  [images] no image regions returned; saved full slide.png as fallback")
+        print("  [images] no figures detected on this slide")
 
     record: dict = {
         "doc_id": doc_id,
-        "slide_num": slide_num,
-        "slide_id": f"{doc_id}#{slide_num:03d}",
+        "slide_num": page_num,
+        "slide_id": f"{doc_id}#{page_num:03d}",
     }
     record.update(fields)
     if detail:
@@ -177,11 +171,11 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("output/images"),
-        help="Directory that will receive rendered slide PNGs and the per-deck slides.jsonl.",
+        help="Directory that will receive per-slide figure crops and the per-deck slides.jsonl.",
     )
     p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
-    p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide PNGs.")
+    p.add_argument("--dpi", type=int, default=150, help="Render DPI for figure crops.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
     p.add_argument(
         "--pages",
@@ -196,6 +190,14 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _resolve_page_nums(pdf_path: Path, pages: set[int] | None, limit: int) -> list[int]:
+    total = page_count(pdf_path)
+    if pages:
+        return sorted(p for p in pages if 1 <= p <= total)
+    nums = list(range(1, total + 1))
+    return nums[:limit] if limit else nums
+
+
 def main() -> None:
     args = parse_args()
 
@@ -203,30 +205,40 @@ def main() -> None:
         raise SystemExit(f"Input not found: {args.pdf}")
 
     pdf_path = resolve_pdf_input(args.pdf)
-
     settings = get_settings()
 
     pages = parse_pages(args.pages) if args.pages else None
+    page_nums = _resolve_page_nums(pdf_path, pages, args.limit)
 
     per_deck_dir = args.output_dir / pdf_path.stem
-    image_paths = render_pdf_pages(pdf_path, per_deck_dir, dpi=args.dpi, pages=pages)
-    if args.limit and not pages:
-        image_paths = image_paths[: args.limit]
+    per_deck_dir.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"codename": args.codename, "product": args.product}
-
     doc_id = _slug(pdf_path.stem)
 
     records: list[dict] = []
-    for i, img in enumerate(image_paths, start=1):
-        print(f"[extract] slide {i}/{len(image_paths)}: {img.name}")
+    for i, page_num in enumerate(page_nums, start=1):
+        print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
-            data = extract_slide(client, settings.openai_model, img)
+            rendered = render_page(pdf_path, page_num, dpi=args.dpi)
+            layout = extract_page_layout(pdf_path, page_num)
+            data = extract_slide(client, settings.openai_model, rendered)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        records.append(build_slide_record(data, img, defaults, doc_id=doc_id))
+        assets_dir = per_deck_dir / f"slide_{page_num:03d}"
+        records.append(
+            build_slide_record(
+                data,
+                page_num=page_num,
+                figures=layout.figures,
+                rendered=rendered,
+                defaults=defaults,
+                doc_id=doc_id,
+                assets_dir=assets_dir,
+            )
+        )
 
     if args.dry_run:
         for r in records:

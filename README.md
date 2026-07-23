@@ -56,10 +56,12 @@ Notes:
 
 ## How it works
 
-1. Render each PDF page to PNG with `pypdfium2` (pure-Python, no Poppler needed).
-2. Send each PNG to an OpenAI vision model (`gpt-4o` by default) with a strict JSON extraction prompt that returns structured text fields plus `images[]` (one entry per distinct visual region with a label + bbox).
-3. Crop the rendered slide to each `bbox_pct` with generous padding and save it as `img_NN__<label>.png` in a per-slide assets folder.
+1. For each slide, walk the PDF with `pdfminer.six` to collect text lines and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions and attach the nearest short text below each cluster as a caption label.
+2. Render the slide to PNG in memory with `pypdfium2` and send it to an OpenAI vision model (`gpt-4o` by default) with a strict JSON extraction prompt that returns structured text fields (product, codename, section, subheaders, tables, detail).
+3. Crop the in-memory render to each pdfminer-detected figure bbox and save as `slide_NNN_img_NN__<label>.png` in a per-slide assets folder. No full-page PNG is saved — only the figure crops.
 4. Write one JSON record per slide, appended to `<output-dir>/<deck-stem>/slides.jsonl`.
+
+Image detection is done geometrically by pdfminer, not by the LLM — this handles vector-drawn "images" (clip-masked shapes, paths, fills) that raster-only extractors miss, and eliminates the LLM's fuzzy bbox guesses.
 
 ## Setup
 
@@ -118,12 +120,10 @@ python -m src.extract --pdf "...pdf.zip" --pages 10-15 --dry-run
 ```
 output/images/<deck-stem>/
   slides.jsonl                  # one JSON record per slide
-  slide_001.png                 # full-page render (source for crops)
   slide_001/                    # per-slide assets folder
-    slide_001_img_01__<label>.png   # cropped visual regions, one per image on the slide
+    slide_001_img_01__<label>.png   # cropped figure regions detected by pdfminer
     slide_001_img_02__<label>.png
     ...
-  slide_002.png
   slide_002/
     ...
 ```
@@ -135,8 +135,9 @@ Each `slide_NNN_img_NN__<label>.png` is named after the header/title text next t
 ```
 src/
   extract.py         # CLI entry point; builds slide records and writes slides.jsonl
-  pdf_utils.py       # render_pdf_pages, crop helpers
-  llm.py             # OpenAI vision extraction
+  pdf_layout.py      # pdfminer.six layout: text lines + clustered figure regions
+  pdf_utils.py       # in-memory page rendering + crop helpers
+  llm.py             # OpenAI vision extraction (text/subheaders/tables only)
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass
