@@ -1,8 +1,6 @@
 import argparse
-import hashlib
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 from openai import OpenAI
@@ -94,8 +92,6 @@ def build_slide_record(
     slide_png: Path,
     defaults: dict,
     doc_id: str,
-    source_file: Path,
-    extraction_meta: dict,
 ) -> dict:
     """Turn one LLM extraction into a slide record matching the JSONL schema."""
     slide_num = int(slide_png.stem.rsplit("_", 1)[-1])
@@ -152,8 +148,6 @@ def build_slide_record(
 
     record: dict = {
         "doc_id": doc_id,
-        "source_file": str(source_file),
-        "source_type": source_file.suffix.lower().lstrip(".") or "pdf",
         "slide_num": slide_num,
         "slide_id": f"{doc_id}#{slide_num:03d}",
     }
@@ -166,8 +160,6 @@ def build_slide_record(
         record["tables"] = tables
     if images:
         record["images"] = images
-    record["slide_image_path"] = slide_png.name
-    record["extraction"] = extraction_meta
     return record
 
 
@@ -204,14 +196,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return f"sha256:{h.hexdigest()}"
-
-
 def main() -> None:
     args = parse_args()
 
@@ -233,11 +217,6 @@ def main() -> None:
     defaults = {"codename": args.codename, "product": args.product}
 
     doc_id = _slug(pdf_path.stem)
-    extraction_meta = {
-        "model": settings.openai_model,
-        "extracted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source_hash": _file_sha256(pdf_path),
-    }
 
     records: list[dict] = []
     for i, img in enumerate(image_paths, start=1):
@@ -247,16 +226,7 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        records.append(
-            build_slide_record(
-                data,
-                img,
-                defaults,
-                doc_id=doc_id,
-                source_file=pdf_path,
-                extraction_meta=extraction_meta,
-            )
-        )
+        records.append(build_slide_record(data, img, defaults, doc_id=doc_id))
 
     if args.dry_run:
         for r in records:

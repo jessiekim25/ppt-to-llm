@@ -9,8 +9,6 @@ Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather
 ```json
 {
   "doc_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6",
-  "source_file": "/path/to/deck.pdf",
-  "source_type": "pdf",
   "slide_num": 42,
   "slide_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6#042",
 
@@ -47,14 +45,7 @@ Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather
       "bbox_pct": [0.05, 0.10, 0.95, 0.70],
       "path": "slide_042_img_01__hero_front.png"
     }
-  ],
-  "slide_image_path": "slide_042.png",
-
-  "extraction": {
-    "model": "gpt-4o",
-    "extracted_at": "2026-07-23T10:15:00+00:00",
-    "source_hash": "sha256:..."
-  }
+  ]
 }
 ```
 
@@ -62,7 +53,6 @@ Notes:
 
 - **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
 - **`subheaders`** stays recursive (subheaders can have `children` with the same schema), so nested layout survives round-trips.
-- **`extraction.source_hash`** lets you re-run only slides from decks whose file hash changed after a prompt/model bump.
 
 ## How it works
 
