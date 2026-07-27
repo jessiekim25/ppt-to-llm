@@ -1,10 +1,10 @@
 # ppt-to-llm
 
-Convert a Samsung campaign visual identity PDF (or PPT export) into one structured **JSON record per slide**, written as a per-deck `slides.jsonl` file alongside per-slide image crops. The JSONL is designed to be fed straight to an LLM (or indexed for retrieval) without a database in the middle — layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
+Convert a Samsung campaign visual identity PDF (or PPT export) into one structured **JSON record per slide**, written as a per-deck `slides.jsonl` file alongside one PNG screenshot per slide. The JSONL is designed to be fed straight to an LLM (or indexed for retrieval) without a database in the middle — layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
 
 ## Slide record schema
 
-Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather than `null` — so a title slide with no tables just has no `tables` key.
+Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitted rather than `null`).
 
 ```json
 {
@@ -18,50 +18,26 @@ Each line in `slides.jsonl` is one slide. Fields are optional — omitted rather
   "section": "01 Brand Basics",
   "sub_section": "Hero Key Visual",
 
-  "detail": "Slide-level body text that isn't tied to any subheader.",
+  "detail": "Slide-level body text that isn't tied to any subheader.\n\ntable title\nSurface | Hex | Usage\nPrimary | #111111 | Global\n\n## 4:1 proportion\n\nParagraph belonging to 4:1.\n\n### How to build layout\n1. ...\n2. ...\n\n## 6:1 proportion\n\nParagraph belonging to 6:1.\n\n### How to build layout\n1. ...",
 
-  "subheaders": [
-    {
-      "title": "4:1 proportion",
-      "detail": "...",
-      "children": [
-        { "title": "How to build layout", "detail": "1. ...\n2. ..." }
-      ]
-    }
-  ],
-
-  "tables": [
-    {
-      "title": "Approved backgrounds",
-      "columns": ["Surface", "Hex", "Usage"],
-      "rows": [["Primary", "#111111", "Global"]]
-    }
-  ],
-
-  "images": [
-    {
-      "idx": 1,
-      "label": "hero_front",
-      "bbox_pct": [0.05, 0.10, 0.95, 0.70],
-      "path": "slide_042_img_01__hero_front.png"
-    }
-  ]
+  "slide_image_path": "slide_042.png"
 }
 ```
 
 Notes:
 
 - **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
-- **`subheaders`** stays recursive (subheaders can have `children` with the same schema), so nested layout survives round-trips.
+- **`detail`** is a single markdown-ish string with the slide's full text hierarchy: slide-level body first, then any tables rendered as `col1 | col2 | ...`, then each subheader as `## Title` (children as `### Title`, and so on). This preserves the "who owns what" nesting without exposing a separate `subheaders` array.
+- **`slide_image_path`** is a basename (e.g. `slide_042.png`) so the images can be moved to any folder without breaking references.
 
 ## How it works
 
-1. For each slide, walk the PDF with `pdfminer.six` to collect text lines (with bboxes, font size, bold flag) and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions and attach the nearest short text below each cluster as a caption label.
-2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM reconstructs the layout hierarchy (product, codename, section, subheaders with nested children, tables) from typography and bbox geometry alone. No image is sent to the LLM.
-3. When the slide has figures, render the page to PNG in memory with `pypdfium2`, crop each pdfminer-detected figure bbox, and save as `slide_NNN_img_NN__<label>.png` in a per-slide assets folder. Slides with no figures don't render at all.
-4. Write one JSON record per slide, appended to `<output-dir>/<deck-stem>/slides.jsonl`.
+1. For each slide, walk the PDF with `pdfminer.six` to collect text lines (with bboxes, font size, bold flag) and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions so the LLM knows which text lines are captions to skip.
+2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM returns the slide-level fields (product, codename, section, sub_section, model) plus a structured hierarchy of subheaders + tables. No image is sent to the LLM.
+3. Render the slide to `slide_NNN.png` with `pypdfium2`.
+4. Flatten the LLM's subheader hierarchy (and any tables) into a single markdown-ish `detail` string, attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
 
-Both text and figure extraction are geometric (pdfminer) — the LLM only handles layout interpretation. This eliminates vision-token cost, keeps the slide image inside your environment, and handles vector-drawn "images" (clip-masked shapes, paths, fills) that raster-only extractors miss.
+Text extraction is geometric (pdfminer) — the LLM only interprets typography + coordinates to reconstruct hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
 
 ## Setup
 
@@ -101,10 +77,10 @@ python -m src.extract ^
 
 | flag           | default          | notes                                                                                     |
 | -------------- | ---------------- | ----------------------------------------------------------------------------------------- |
-| `--output-dir` | `output/images`  | Rendered slide PNGs, per-slide assets folders, and `slides.jsonl` all land here.          |
+| `--output-dir` | `output/images`  | Per-slide screenshots and `slides.jsonl` land here.                                       |
 | `--codename`   | `""`             | Fallback for the `codename` field when not visible on a slide.                            |
 | `--product`    | `""`             | Fallback for the `product` field when not visible on a slide.                             |
-| `--dpi`        | `150`            | Render DPI for slide PNGs.                                                                |
+| `--dpi`        | `150`            | Render DPI for the per-slide screenshots.                                                 |
 | `--limit`      | `0` (all)        | Only process the first N slides. Ignored if `--pages` is set.                             |
 | `--pages`      | `""` (all)       | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
 | `--dry-run`    | off              | Print records to stdout instead of writing `slides.jsonl`.                                |
@@ -119,16 +95,13 @@ python -m src.extract --pdf "...pdf.zip" --pages 10-15 --dry-run
 
 ```
 output/images/<deck-stem>/
-  slides.jsonl                  # one JSON record per slide
-  slide_001/                    # per-slide assets folder
-    slide_001_img_01__<label>.png   # cropped figure regions detected by pdfminer
-    slide_001_img_02__<label>.png
-    ...
-  slide_002/
-    ...
+  slides.jsonl        # one JSON record per slide
+  slide_001.png       # full-slide screenshot referenced by that record's slide_image_path
+  slide_002.png
+  ...
 ```
 
-Each `slide_NNN_img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`slide_042_img_01__1.png`, `slide_042_img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in the extracted content. Filenames include the slide number so they stay unique when copied out to a flat folder — the JSON records store only the basename, so relocating the images just means pointing your reader at whichever folder holds them.
+The JSON records store `slide_image_path` as a basename only, so the screenshots can be moved to any folder — as long as your reader knows where they live, references stay valid.
 
 ## Layout
 
@@ -136,7 +109,7 @@ Each `slide_NNN_img_NN__<label>.png` is named after the header/title text next t
 src/
   extract.py         # CLI entry point; builds slide records and writes slides.jsonl
   pdf_layout.py      # pdfminer.six layout: text lines + clustered figure regions
-  pdf_utils.py       # in-memory page rendering + crop helpers
+  pdf_utils.py       # page rendering (pypdfium2) + zip input handling
   llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3

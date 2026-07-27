@@ -4,13 +4,12 @@ import re
 from pathlib import Path
 
 from openai import OpenAI
-from PIL import Image
 
 from shared.settings import get_settings
 
 from .llm import build_payload, extract_slide
-from .pdf_layout import Figure, extract_page_layout
-from .pdf_utils import crop_and_save, page_count, render_page, resolve_pdf_input
+from .pdf_layout import extract_page_layout
+from .pdf_utils import page_count, render_page, resolve_pdf_input
 
 SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
 
@@ -23,48 +22,73 @@ def _slug(text: str, max_len: int = 60) -> str:
     return text[:max_len].strip("_-")
 
 
-def _clean_subheader(sh: dict) -> dict | None:
-    """Normalize an LLM subheader entry, dropping empties and recursing into children."""
-    if not isinstance(sh, dict):
-        return None
-    title = str(sh.get("title", "") or "").strip()
-    detail = str(sh.get("detail", "") or "").strip()
-    tables = _clean_tables(sh.get("tables") or [])
-    children_raw = sh.get("children") or []
-    children = [c for c in (_clean_subheader(x) for x in children_raw) if c]
-    if not (title or detail or tables or children):
-        return None
-    out: dict = {}
-    if title:
-        out["title"] = title
-    if detail:
-        out["detail"] = detail
-    if tables:
-        out["tables"] = tables
-    if children:
-        out["children"] = children
-    return out
+def _format_tables(tables: list) -> list[str]:
+    """Render each table as its column-header row plus cell rows, multi-line cells joined by ' / '."""
+    def cell(v: object) -> str:
+        parts = [p.strip() for p in str(v).splitlines() if p.strip()]
+        return " / ".join(parts)
 
-
-def _clean_tables(tables: list) -> list[dict]:
-    out: list[dict] = []
-    for t in tables or []:
+    out: list[str] = []
+    for i, t in enumerate(tables or []):
         if not isinstance(t, dict):
             continue
+        if i > 0:
+            out.append("")
         title = str(t.get("title", "") or "").strip()
-        columns = [str(c).strip() for c in (t.get("columns") or [])]
-        rows = [[str(c) for c in (row or [])] for row in (t.get("rows") or [])]
-        if not (columns or rows):
-            continue
-        entry: dict = {}
         if title:
-            entry["title"] = title
+            out.append(title)
+        columns = [str(c).strip() for c in (t.get("columns") or [])]
         if columns:
-            entry["columns"] = columns
-        if rows:
-            entry["rows"] = rows
-        out.append(entry)
+            out.append(" | ".join(columns))
+        for row in t.get("rows") or []:
+            cells = [cell(c) for c in row]
+            if columns and len(cells) < len(columns):
+                cells += [""] * (len(columns) - len(cells))
+            out.append(" | ".join(cells))
     return out
+
+
+def _render_subheader(sh: dict, depth: int = 2) -> str:
+    """Render a subheader (and its nested children) as a markdown-ish block."""
+    if not isinstance(sh, dict):
+        return ""
+    title = str(sh.get("title", "") or "").strip()
+    sh_detail = str(sh.get("detail", "") or "").strip()
+    sh_tables = _format_tables(sh.get("tables") or [])
+    children = sh.get("children") or []
+
+    block: list[str] = []
+    if title:
+        prefix = "#" * max(2, min(depth, 6))
+        block.append(f"{prefix} {title}")
+    if sh_detail:
+        block.append(sh_detail)
+    if sh_tables:
+        block.append("\n".join(sh_tables))
+    for child in children:
+        child_block = _render_subheader(child, depth=depth + 1)
+        if child_block:
+            block.append(child_block)
+    return "\n\n".join(block)
+
+
+def _compose_detail(extracted: dict) -> str:
+    """Concatenate slide-level detail + slide tables + rendered subheader hierarchy."""
+    parts: list[str] = []
+    slide_detail = str(extracted.get("detail", "") or "").strip()
+    if slide_detail:
+        parts.append(slide_detail)
+
+    slide_table_lines = _format_tables(extracted.get("tables") or [])
+    if slide_table_lines:
+        parts.append("\n".join(slide_table_lines))
+
+    for sh in extracted.get("subheaders") or []:
+        rendered = _render_subheader(sh, depth=2)
+        if rendered:
+            parts.append(rendered)
+
+    return "\n\n".join(parts)
 
 
 def parse_pages(spec: str) -> set[int]:
@@ -85,52 +109,10 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def _save_figure_crops(
-    figures: list[Figure],
-    rendered: Image.Image,
-    page_num: int,
-    assets_dir: Path,
-) -> list[dict]:
-    """Crop each pdfminer-detected figure from the rendered page image; return record entries."""
-    images: list[dict] = []
-    for idx, fig in enumerate(figures, start=1):
-        label = fig.label.strip()
-        label_slug = _slug(label)
-        stem = f"slide_{page_num:03d}_img_{idx:02d}"
-        filename = f"{stem}__{label_slug}.png" if label_slug else f"{stem}.png"
-        out_path = assets_dir / filename
-        if not crop_and_save(rendered, fig.bbox_pct, out_path):
-            print(f"  ! figure {idx}: bad bbox {fig.bbox_pct!r}, skipping")
-            continue
-        entry: dict = {
-            "idx": idx,
-            "bbox_pct": [float(x) for x in fig.bbox_pct],
-            "path": filename,
-        }
-        if label:
-            entry["label"] = label
-        images.append(entry)
-    return images
-
-
-def _crop_slide_figures(
-    figures: list[Figure],
-    pdf_path: Path,
-    page_num: int,
-    dpi: int,
-    assets_dir: Path,
-) -> list[dict]:
-    """Render the page in memory (only if there are figures) and save each crop."""
-    if not figures:
-        return []
-    rendered = render_page(pdf_path, page_num, dpi=dpi)
-    return _save_figure_crops(figures, rendered, page_num, assets_dir)
-
-
 def build_slide_record(
     extracted: dict,
     page_num: int,
-    images: list[dict],
+    slide_image_name: str,
     defaults: dict,
     doc_id: str,
 ) -> dict:
@@ -142,9 +124,7 @@ def build_slide_record(
         if value:
             fields[f] = value
 
-    detail = str(extracted.get("detail", "") or "").strip()
-    subheaders = [c for c in (_clean_subheader(x) for x in (extracted.get("subheaders") or [])) if c]
-    tables = _clean_tables(extracted.get("tables") or [])
+    detail = _compose_detail(extracted)
 
     record: dict = {
         "doc_id": doc_id,
@@ -154,12 +134,7 @@ def build_slide_record(
     record.update(fields)
     if detail:
         record["detail"] = detail
-    if subheaders:
-        record["subheaders"] = subheaders
-    if tables:
-        record["tables"] = tables
-    if images:
-        record["images"] = images
+    record["slide_image_path"] = slide_image_name
     return record
 
 
@@ -177,11 +152,11 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("output/images"),
-        help="Directory that will receive per-slide figure crops and the per-deck slides.jsonl.",
+        help="Directory that will receive per-slide screenshots and the per-deck slides.jsonl.",
     )
     p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
-    p.add_argument("--dpi", type=int, default=150, help="Render DPI for figure crops.")
+    p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
     p.add_argument(
         "--pages",
@@ -233,17 +208,16 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        assets_dir = per_deck_dir / f"slide_{page_num:03d}"
-        images = _crop_slide_figures(layout.figures, pdf_path, page_num, args.dpi, assets_dir)
-        if images:
-            print(f"  [images] {len(images)} figure crop(s) from pdfminer")
-        else:
-            print("  [images] no figures detected on this slide")
+
+        slide_image_name = f"slide_{page_num:03d}.png"
+        rendered = render_page(pdf_path, page_num, dpi=args.dpi)
+        rendered.save(per_deck_dir / slide_image_name, format="PNG")
+
         records.append(
             build_slide_record(
                 data,
                 page_num=page_num,
-                images=images,
+                slide_image_name=slide_image_name,
                 defaults=defaults,
                 doc_id=doc_id,
             )

@@ -43,29 +43,3 @@ def render_page(pdf_path: Path, page_num: int, dpi: int = 150) -> Image.Image:
         return pdf[page_num - 1].render(scale=scale).to_pil().convert("RGB")
     finally:
         pdf.close()
-
-
-def crop_and_save(
-    rendered: Image.Image,
-    bbox_pct: tuple[float, float, float, float] | list[float],
-    out_path: Path,
-    pad_pct: float = 0.02,
-) -> bool:
-    """Crop rendered image to bbox_pct (top-left, fractions 0-1) and save PNG."""
-    w, h = rendered.size
-    try:
-        x1, y1, x2, y2 = (
-            float(bbox_pct[0]), float(bbox_pct[1]),
-            float(bbox_pct[2]), float(bbox_pct[3]),
-        )
-    except (TypeError, ValueError, IndexError):
-        return False
-    x1 -= pad_pct; y1 -= pad_pct; x2 += pad_pct; y2 += pad_pct
-    x1 = max(0.0, min(1.0, x1)); x2 = max(0.0, min(1.0, x2))
-    y1 = max(0.0, min(1.0, y1)); y2 = max(0.0, min(1.0, y2))
-    if x2 <= x1 or y2 <= y1:
-        return False
-    box = (int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h))
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    rendered.crop(box).save(out_path, format="PNG")
-    return True
