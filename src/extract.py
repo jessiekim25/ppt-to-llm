@@ -56,7 +56,11 @@ def _table_blocks(tables: list) -> list[dict]:
 
 
 def _block_from_subheader(sh: dict) -> dict | None:
-    """Turn one LLM subheader entry into a detail block; recurse into children."""
+    """Turn one LLM subheader entry into a detail block; recurse into children.
+
+    Drop subheaders that carry only a title (no body, no tables, no children) —
+    those are captions or noise the LLM should have skipped per the prompt.
+    """
     if not isinstance(sh, dict):
         return None
     title = str(sh.get("title", "") or "").strip()
@@ -66,6 +70,9 @@ def _block_from_subheader(sh: dict) -> dict | None:
         child = _block_from_subheader(c)
         if child:
             child_blocks.append(child)
+
+    if title and not body and not child_blocks:
+        return None
 
     block: dict = {}
     if title:

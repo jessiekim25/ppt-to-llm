@@ -16,14 +16,22 @@ INPUT SHAPE:
     {"idx": 1, "bbox": [x0, y0, x1, y1], "label": "..."} // pre-detected figure regions; their nearest short caption is in `label`
   ]
 }
-All bboxes are TOP-LEFT origin, fractions of page (0-1). Reading order = top to bottom, then left to right (compare y0 first, then x0).
+All bboxes are TOP-LEFT origin, fractions of page (0-1). text_lines arrive roughly in top-to-bottom order but you must decide layout structure from bbox geometry, not input order.
 
 Use text_lines' geometry and typography to reconstruct layout:
 - Larger `size` or `bold: true` marks a heading (section label, slide title, subheader).
 - Text lines whose bboxes share the same x0/x1 across multiple rows are a single column.
-- Multiple columns with parallel bold headings at similar y0 form a multi-column subheader layout.
 - Text lines aligned into a grid (same x0/y0 patterns across rows and columns) are a table.
 - Text lines whose bbox falls INSIDE (or directly below) a `figures[i].bbox` are captions of that figure — do NOT put them in `detail` or `subheaders`; the caption is already in `figures[i].label`.
+
+COLUMN STRUCTURE — read this before assigning any text to a subheader or detail:
+1. Scan every bold/large heading. If two or more headings share a similar y0 (within ~5% of page height) at clearly different x0 positions, the slide has PARALLEL COLUMNS at that y-band. Each such heading is a separate column-anchor subheader.
+2. For each column-anchor subheader, its column extends downward. Every text line below it whose x-center falls within (or near) that heading's x-range belongs to that column — either as the subheader's `detail`, or as a nested entry in `children`.
+3. Column body content NEVER lands in the slide-level `detail`. If a line clearly sits under a column's heading in the same x-band, it belongs to that column's subheader, not to slide-level detail.
+4. REPEATED CHILD HEADINGS: when the SAME label (e.g. "How to build layout:") appears once under each column, EACH occurrence is a distinct child of the column subheader directly above it — do NOT merge them into one entry, and do NOT hoist them to the slide level.
+5. OUTPUT ORDER FOR COLUMNS: within a parallel-column band, emit the LEFT column's subheader FULLY (title + detail + all children recursively) before starting the RIGHT column's subheader. Do NOT interleave content from parallel columns.
+
+EMPTY SUBHEADER RULE: never emit a subheader whose title has no descriptive body AND no children. A bold short label with only a graphic (no text) below it is a caption — skip it. Captions belong to figures[i].label.
 
 Return a JSON object with these fields.
 
@@ -59,19 +67,20 @@ Content fields:
   When one logical table is laid out visually as TWO side-by-side identical-header column pairs (e.g. two "Format | File name" pairs stacked side by side), treat it as ONE table with one set of column headers and all rows concatenated in reading order.
   Return "tables": [] if the slide has no tables.
 
-- subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bold or larger-font short label that introduces a block of descriptive body text. Includes:
+- subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bold or larger-font short label that introduces a block of descriptive body text OR a nested sub-block. Includes:
     * sub-titles that horizontally divide the slide into sections;
-    * bold column headings at the top of side-by-side text blocks in a multi-column layout;
+    * bold column headings at the top of side-by-side text blocks in a multi-column layout — these ARE column anchors (see COLUMN STRUCTURE);
     * labels marking each cell of a grid layout, with a paragraph next to or below;
     * bold captions under figures that name each panel type — text sitting under a figures[i].bbox is a caption (see above); text sitting BETWEEN two figures with descriptive text below IS a subheader.
-  Capture ALL such headings in reading order (top-to-bottom then left-to-right). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete.
+  Capture ALL such headings in reading order (top-to-bottom then left-to-right, respecting COLUMN STRUCTURE above). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete.
 
   STRICT RULES:
     (a) EVERY heading must be its OWN entry with its heading text in the `title` field. Do NOT collapse multiple headings into one subheader's `detail` as a bulleted list.
     (b) `title` contains ONLY the heading text — never the description, never a leading dash or bullet.
-    (c) `detail` contains the full descriptive body text for THAT subheader only — never other subheaders' titles as bullets.
+    (c) `detail` contains the full descriptive body text for THAT subheader only — never other subheaders' titles as bullets, never content that belongs to a different column.
     (d) Do not invent headings, and do not use the main slide title as a subheader.
-    (e) NESTING: if a subheader's visual area contains another labeled sub-block below it, put that inner sub-block in the parent's `children` array — do NOT flatten it and do NOT stuff the child's content into the parent's `detail`. A child subheader has the same schema as its parent and can itself have `children`.
+    (e) NESTING: if a subheader's visual area contains another labeled sub-block below it (e.g. "4:1 proportion" column contains a "How to build layout:" heading with a numbered list beneath), put that inner sub-block in the parent's `children` array — do NOT flatten it, do NOT stuff the child's content into the parent's `detail`, and do NOT lift the child to the slide-level detail. A child subheader has the same schema as its parent and can itself have `children`.
+    (f) A subheader must have at least one of: non-empty `detail`, non-empty `tables`, non-empty `children`. If a candidate heading has none of these, it's a caption or noise — omit it entirely (see EMPTY SUBHEADER RULE).
 
   Each entry:
   {
@@ -89,9 +98,17 @@ def _round_bbox(b):
 
 
 def build_payload(layout, page_num: int) -> dict:
-    """Serialize a PageLayout into the compact JSON payload the LLM prompt expects."""
+    """Serialize a PageLayout into the compact JSON payload the LLM prompt expects.
+
+    text_lines are sorted top-to-bottom, then left-to-right, with y-values banded
+    to 1% of the page so adjacent lines in the same paragraph stay clustered.
+    """
+    def sort_key(tl):
+        y0, x0 = tl.bbox_pct[1], tl.bbox_pct[0]
+        return (round(y0, 2), x0)
+
     text_lines = []
-    for tl in layout.text_lines:
+    for tl in sorted(layout.text_lines, key=sort_key):
         entry = {
             "bbox": _round_bbox(tl.bbox_pct),
             "text": tl.text,
