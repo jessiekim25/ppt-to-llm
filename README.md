@@ -53,12 +53,14 @@ Notes:
 
 ## How it works
 
-1. For each slide, walk the PDF with `pdfminer.six` to collect text lines (with bboxes, font size, bold flag) and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions so the LLM knows which text lines are captions to skip.
-2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM returns the slide-level fields (product, codename, section, sub_section, model) plus a structured hierarchy of subheaders + tables. No image is sent to the LLM.
+1. For each slide:
+   - `pdfminer.six` collects text lines (with bboxes, font size, bold flag) at paragraph (LTTextBox) granularity, plus vector/raster primitives that cluster into figure regions.
+   - `pdfplumber` detects any ruled tables on the page and returns their columns/rows/bboxes. Text lines whose center falls inside a detected table bbox are dropped from the LLM payload so the pre-extracted table content stays authoritative.
+2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM returns the slide-level fields (product, codename, section, sub_section, model) plus a structured hierarchy of subheaders + fallback tables. No image is sent to the LLM.
 3. Render the slide to `slide_NNN.png` with `pypdfium2`.
-4. Turn the LLM's subheader hierarchy (and any tables) into the `detail` block list, attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
+4. Compose the `detail` block list — slide body, pdfplumber's tables (or LLM's if pdfplumber found none), then the LLM's subheader hierarchy — attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
 
-Text extraction is geometric (pdfminer) — the LLM only interprets typography + coordinates to reconstruct hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
+Text and table extraction are geometric (pdfminer + pdfplumber) — the LLM only interprets typography + coordinates for hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
 
 ## Setup
 
@@ -129,7 +131,7 @@ The JSON records store `slide_image_path` as a basename only, so the screenshots
 ```
 src/
   extract.py         # CLI entry point; builds slide records and writes slides.jsonl
-  pdf_layout.py      # pdfminer.six layout: text lines + clustered figure regions
+  pdf_layout.py      # pdfminer.six text/figures + pdfplumber tables per page
   pdf_utils.py       # page rendering (pypdfium2) + zip input handling
   llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)
 shared/

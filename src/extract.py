@@ -8,7 +8,7 @@ from openai import OpenAI
 from shared.settings import get_settings
 
 from .llm import build_payload, extract_slide
-from .pdf_layout import extract_page_layout
+from .pdf_layout import Table, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
 
 SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
@@ -85,15 +85,27 @@ def _block_from_subheader(sh: dict) -> dict | None:
     return block or None
 
 
-def _compose_detail(extracted: dict) -> list[dict]:
-    """Return the slide's text hierarchy as a list of blocks in reading order."""
+def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
+    """Return the slide's text hierarchy as a list of blocks in reading order.
+
+    Slide-level tables come from pdfplumber (`pre_extracted_tables`) when
+    available, since its ruling-line detection is more reliable than the LLM's
+    grid-inference. The LLM's `tables[]` output is used as a fallback when
+    pdfplumber found nothing.
+    """
     blocks: list[dict] = []
 
     slide_body = str(extracted.get("detail", "") or "").strip()
     if slide_body:
         blocks.append({"body": slide_body})
 
-    blocks.extend(_table_blocks(extracted.get("tables") or []))
+    if pre_extracted_tables:
+        for t in pre_extracted_tables:
+            rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
+            if rendered:
+                blocks.append({"table": rendered})
+    else:
+        blocks.extend(_table_blocks(extracted.get("tables") or []))
 
     for sh in extracted.get("subheaders") or []:
         block = _block_from_subheader(sh)
@@ -127,6 +139,7 @@ def build_slide_record(
     slide_image_name: str,
     defaults: dict,
     doc_id: str,
+    pre_extracted_tables: list[Table] = (),
 ) -> dict:
     fields: dict = {}
     for f in SLIDE_FIELDS:
@@ -136,7 +149,7 @@ def build_slide_record(
         if value:
             fields[f] = value
 
-    detail = _compose_detail(extracted)
+    detail = _compose_detail(extracted, pre_extracted_tables)
 
     record: dict = {
         "doc_id": doc_id,
@@ -248,6 +261,7 @@ def main() -> None:
                 slide_image_name=slide_image_name,
                 defaults=defaults,
                 doc_id=doc_id,
+                pre_extracted_tables=layout.tables,
             )
         )
 

@@ -9,6 +9,7 @@ short text label as a caption.
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pdfplumber
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import (
     LAParams,
@@ -43,12 +44,22 @@ class Figure:
 
 
 @dataclass
+class Table:
+    """One pdfplumber-detected table in top-left-origin percent coords."""
+
+    bbox_pct: tuple[float, float, float, float]
+    columns: list[str] = field(default_factory=list)
+    rows: list[list[str]] = field(default_factory=list)
+
+
+@dataclass
 class PageLayout:
     page_num: int
     width: float
     height: float
     text_lines: list[TextLine] = field(default_factory=list)
     figures: list[Figure] = field(default_factory=list)
+    tables: list[Table] = field(default_factory=list)
 
 
 def _to_pct_top_left(
@@ -200,8 +211,71 @@ def _attach_labels(
     return out
 
 
+def _extract_tables(pdf_path: Path, page_num: int) -> list[Table]:
+    """Detect tables via pdfplumber using visible ruling lines.
+
+    Restricted to lines-only detection (`vertical_strategy`/`horizontal_strategy` = "lines")
+    to avoid false-positive tables on multi-column subheader layouts that only
+    happen to align on a grid. If your deck uses borderless tables and needs
+    text-alignment fallback, loosen these settings.
+    """
+    tables_out: list[Table] = []
+    try:
+        with pdfplumber.open(str(pdf_path)) as pdf:
+            if page_num < 1 or page_num > len(pdf.pages):
+                return tables_out
+            page = pdf.pages[page_num - 1]
+            page_w = float(page.width) or 1.0
+            page_h = float(page.height) or 1.0
+            for t in page.find_tables(table_settings={
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "lines",
+            }):
+                data = t.extract() or []
+                if not data:
+                    continue
+                columns = [str(c or "").strip() for c in data[0]]
+                rows = [[str(c or "").strip() for c in row] for row in data[1:]]
+                if not any(columns) and not any(any(r) for r in rows):
+                    continue
+                x0, top, x1, bottom = t.bbox
+                tables_out.append(
+                    Table(
+                        bbox_pct=(x0 / page_w, top / page_h, x1 / page_w, bottom / page_h),
+                        columns=columns,
+                        rows=rows,
+                    )
+                )
+    except Exception as e:
+        print(f"  ! pdfplumber table detection failed for page {page_num}: {e}")
+    return tables_out
+
+
+def _text_inside_any_bbox(
+    text_bbox_pct: tuple[float, float, float, float],
+    table_bboxes: list[tuple[float, float, float, float]],
+) -> bool:
+    """True if the text bbox's center falls inside any table bbox."""
+    tx0, ty0, tx1, ty1 = text_bbox_pct
+    cx = (tx0 + tx1) / 2
+    cy = (ty0 + ty1) / 2
+    for bx0, by0, bx1, by1 in table_bboxes:
+        if bx0 <= cx <= bx1 and by0 <= cy <= by1:
+            return True
+    return False
+
+
 def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
-    """Extract text lines + figure clusters from a single 1-indexed page."""
+    """Extract text lines + figure clusters + tables from a single 1-indexed page.
+
+    pdfplumber owns table detection (visible ruling lines). Text lines whose
+    center falls inside a detected table's bbox are dropped from `text_lines`
+    so the LLM never re-encodes them as subheaders or body — the pre-extracted
+    table content is authoritative.
+    """
+    tables = _extract_tables(pdf_path, page_num)
+    table_bboxes = [t.bbox_pct for t in tables]
+
     la = LAParams()
     for page in extract_pages(
         str(pdf_path), page_numbers=[page_num - 1], laparams=la
@@ -227,6 +301,11 @@ def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
             )
             for (b, t, s, f) in texts_raw
         ]
+        if table_bboxes:
+            text_lines = [
+                tl for tl in text_lines
+                if not _text_inside_any_bbox(tl.bbox_pct, table_bboxes)
+            ]
         figures = [
             Figure(bbox_pct=_to_pct_top_left(b, page_w, page_h), label=lbl)
             for (b, lbl) in labeled
@@ -237,6 +316,7 @@ def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
             height=page_h,
             text_lines=text_lines,
             figures=figures,
+            tables=tables,
         )
 
-    return PageLayout(page_num=page_num, width=0, height=0)
+    return PageLayout(page_num=page_num, width=0, height=0, tables=tables)
