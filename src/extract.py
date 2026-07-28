@@ -22,29 +22,36 @@ def _slug(text: str, max_len: int = 60) -> str:
     return text[:max_len].strip("_-")
 
 
-def _format_tables(tables: list) -> list[str]:
-    """Render each table as its column-header row plus cell rows, multi-line cells joined by ' / '."""
+def _render_table(t: dict) -> str:
+    """Render one table as 'title\\ncol1 | col2 | ...\\ncell11 | cell12 | ...' — multi-line cells joined with ' / '."""
     def cell(v: object) -> str:
         parts = [p.strip() for p in str(v).splitlines() if p.strip()]
         return " / ".join(parts)
 
-    out: list[str] = []
-    for i, t in enumerate(tables or []):
+    lines: list[str] = []
+    title = str(t.get("title", "") or "").strip()
+    if title:
+        lines.append(title)
+    columns = [str(c).strip() for c in (t.get("columns") or [])]
+    if columns:
+        lines.append(" | ".join(columns))
+    for row in t.get("rows") or []:
+        cells = [cell(c) for c in row]
+        if columns and len(cells) < len(columns):
+            cells += [""] * (len(columns) - len(cells))
+        lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def _table_blocks(tables: list) -> list[dict]:
+    """One {"table": "..."} block per non-empty LLM table entry."""
+    out: list[dict] = []
+    for t in tables or []:
         if not isinstance(t, dict):
             continue
-        if i > 0:
-            out.append("")
-        title = str(t.get("title", "") or "").strip()
-        if title:
-            out.append(title)
-        columns = [str(c).strip() for c in (t.get("columns") or [])]
-        if columns:
-            out.append(" | ".join(columns))
-        for row in t.get("rows") or []:
-            cells = [cell(c) for c in row]
-            if columns and len(cells) < len(columns):
-                cells += [""] * (len(columns) - len(cells))
-            out.append(" | ".join(cells))
+        rendered = _render_table(t).strip()
+        if rendered:
+            out.append({"table": rendered})
     return out
 
 
@@ -53,38 +60,32 @@ def _block_from_subheader(sh: dict) -> dict | None:
     if not isinstance(sh, dict):
         return None
     title = str(sh.get("title", "") or "").strip()
-    body_parts: list[str] = []
-    sh_detail = str(sh.get("detail", "") or "").strip()
-    if sh_detail:
-        body_parts.append(sh_detail)
-    sh_table_lines = _format_tables(sh.get("tables") or [])
-    if sh_table_lines:
-        body_parts.append("\n".join(sh_table_lines))
-    children = [b for b in (_block_from_subheader(c) for c in (sh.get("children") or [])) if b]
+    body = str(sh.get("detail", "") or "").strip()
+    child_blocks = _table_blocks(sh.get("tables") or [])
+    for c in sh.get("children") or []:
+        child = _block_from_subheader(c)
+        if child:
+            child_blocks.append(child)
 
     block: dict = {}
     if title:
         block["subheader"] = title
-    if body_parts:
-        block["body"] = "\n\n".join(body_parts)
-    if children:
-        block["children"] = children
+    if body:
+        block["body"] = body
+    if child_blocks:
+        block["children"] = child_blocks
     return block or None
 
 
 def _compose_detail(extracted: dict) -> list[dict]:
-    """Return the slide's text hierarchy as a list of {subheader, body, children} blocks."""
+    """Return the slide's text hierarchy as a list of blocks in reading order."""
     blocks: list[dict] = []
 
-    slide_body_parts: list[str] = []
-    slide_detail = str(extracted.get("detail", "") or "").strip()
-    if slide_detail:
-        slide_body_parts.append(slide_detail)
-    slide_table_lines = _format_tables(extracted.get("tables") or [])
-    if slide_table_lines:
-        slide_body_parts.append("\n".join(slide_table_lines))
-    if slide_body_parts:
-        blocks.append({"body": "\n\n".join(slide_body_parts)})
+    slide_body = str(extracted.get("detail", "") or "").strip()
+    if slide_body:
+        blocks.append({"body": slide_body})
+
+    blocks.extend(_table_blocks(extracted.get("tables") or []))
 
     for sh in extracted.get("subheaders") or []:
         block = _block_from_subheader(sh)

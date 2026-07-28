@@ -20,9 +20,13 @@ Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitt
 
   "detail": [
     { "body": "Slide-level body text that isn't tied to any subheader." },
+    { "table": "Approved backgrounds\nSurface | Hex\nPrimary | #111111\nAccent | #E4002B" },
     {
       "subheader": "Product Logo",
-      "body": "The height of product logo should not exceed 90% of the SAMSUNG lettermark s-height. For OOH/Retails, please apply 80%."
+      "body": "The height of product logo should not exceed 90% of the SAMSUNG lettermark s-height.",
+      "children": [
+        { "table": "Sizing\nContext | Size\nPrint | 90%\nOOH | 80%" }
+      ]
     },
     {
       "subheader": "Size ratio",
@@ -39,7 +43,12 @@ Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitt
 Notes:
 
 - **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
-- **`detail`** is a list of blocks in reading order. A block has any of `subheader` (heading text), `body` (paragraph, or table rendered as `col1 | col2 | ...` rows), and `children` (nested blocks with the same shape). Blocks omit fields they don't have — a slide-level paragraph is just `{"body": "..."}`, a heading with only a nested child is `{"subheader": "...", "children": [...]}`.
+- **`detail`** is a list of blocks in reading order. A block has any of:
+  - `subheader` — heading text.
+  - `body` — paragraph text.
+  - `table` — one table rendered as `title\ncol1 | col2 | ...\ncell11 | cell12 | ...`; multi-line cells are joined with ` / `. Each table is its own block, never mixed into a body string.
+  - `children` — nested blocks with the same shape.
+  Blocks omit fields they don't have — a slide-level paragraph is just `{"body": "..."}`, a table is `{"table": "..."}`, a heading that only owns a nested child is `{"subheader": "...", "children": [...]}`.
 - **`slide_image_path`** is a basename (e.g. `slide_042.png`) so the images can be moved to any folder without breaking references.
 
 ## How it works
