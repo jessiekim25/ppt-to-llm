@@ -22,16 +22,22 @@ Use text_lines' geometry and typography to reconstruct layout:
 - Larger `size` or `bold: true` marks a heading (section label, slide title, subheader).
 - Text lines whose bboxes share the same x0/x1 across multiple rows are a single column.
 - Text lines aligned into a grid (same x0/y0 patterns across rows and columns) are a table.
-- Text lines whose bbox falls INSIDE (or directly below) a `figures[i].bbox` are captions of that figure — do NOT put them in `detail` or `subheaders`; the caption is already in `figures[i].label`.
+- `figures[i].bbox` marks where an image sits — use it only to understand layout. A text line's position near/inside/across a figure does NOT make it a caption to drop.
+
+COMPLETENESS RULE — highest priority:
+Every text line in the payload MUST appear somewhere in your output — as one of the slide-level string fields, in slide-level `detail`, inside a subheader's `title`/`detail`, as a table cell, or nested in `children`. NEVER drop a text line as "noise", "figure caption", "already visible on the slide", or "duplicate". If you're unsure where a line belongs, put it in slide-level `detail` rather than dropping it. The one exception: purely decorative fragments with no words (a stray dash, a page-number digit alone in a corner) may be omitted — everything else must survive.
+
+MULTI-LINE TITLES: if two or more consecutive text lines near the top of the slide share the same (or very close) `size` and sit at consecutive y-positions with matching x0, they are ONE title that wrapped to multiple lines. Concatenate them with a single space and put the joined string in `sub_section`. Never emit only the first line.
 
 COLUMN STRUCTURE — read this before assigning any text to a subheader or detail:
 1. Scan every bold/large heading. If two or more headings share a similar y0 (within ~5% of page height) at clearly different x0 positions, the slide has PARALLEL COLUMNS at that y-band. Each such heading is a separate column-anchor subheader.
-2. For each column-anchor subheader, its column extends downward. Every text line below it whose x-center falls within (or near) that heading's x-range belongs to that column — either as the subheader's `detail`, or as a nested entry in `children`.
-3. Column body content NEVER lands in the slide-level `detail`. If a line clearly sits under a column's heading in the same x-band, it belongs to that column's subheader, not to slide-level detail.
-4. REPEATED CHILD HEADINGS: when the SAME label (e.g. "How to build layout:") appears once under each column, EACH occurrence is a distinct child of the column subheader directly above it — do NOT merge them into one entry, and do NOT hoist them to the slide level.
-5. OUTPUT ORDER FOR COLUMNS: within a parallel-column band, emit the LEFT column's subheader FULLY (title + detail + all children recursively) before starting the RIGHT column's subheader. Do NOT interleave content from parallel columns.
+2. A COLUMN CAN SPAN A FIGURE. A column's heading may sit at the top of a section and its descriptive body may sit at the bottom of the same section, with a figure (or blank space) between them. Group by x-range: any text in the same x-band as a column heading — above OR below any intermediate figure — belongs to that column's subheader (as `detail` or as a nested child). Do NOT let an intervening figure orphan the body text.
+3. For each column-anchor subheader, its column extends across the full height of that section. Every text line whose x-center falls within (or near) that heading's x-range belongs to that column.
+4. Column body content NEVER lands in the slide-level `detail`. If a line clearly sits within a column's x-band, it belongs to that column's subheader.
+5. REPEATED CHILD HEADINGS: when the SAME label (e.g. "How to build layout:") appears once under each column, EACH occurrence is a distinct child of the column subheader directly above it — do NOT merge them into one entry, and do NOT hoist them to the slide level.
+6. OUTPUT ORDER FOR COLUMNS: within a parallel-column band, emit the LEFT column's subheader FULLY (title + detail + all children recursively) before starting the RIGHT column's subheader. Do NOT interleave content from parallel columns.
 
-EMPTY SUBHEADER RULE: never emit a subheader whose title has no descriptive body AND no children. A bold short label with only a graphic (no text) below it is a caption — skip it. Captions belong to figures[i].label.
+EMPTY SUBHEADER RULE: this should almost never fire under the COMPLETENESS RULE. But if a candidate heading truly has no body and no children after you've tried COLUMN STRUCTURE step 2 (checking above/below figures in the same x-band), it may be a decorative label — put it in slide-level `detail` verbatim rather than emitting a subheader with no content.
 
 Return a JSON object with these fields.
 
@@ -50,7 +56,6 @@ Content fields:
   Slide-wide text that must always land in this slide-level `detail` field, regardless of layout:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide (small `size`, near the bottom of the page).
-  Do NOT pull caption text that sits under a figure into `detail` — captions are in `figures[i].label` and should not be duplicated.
 
 - tables: array of TEXT-ONLY tables — text lines arranged in a grid (same x0/x1 across rows). Each entry:
   {
