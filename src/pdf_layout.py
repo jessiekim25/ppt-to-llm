@@ -18,6 +18,7 @@ from pdfminer.layout import (
     LTImage,
     LTLine,
     LTRect,
+    LTTextBox,
     LTTextLine,
 )
 
@@ -77,8 +78,35 @@ def _union(parent, x, y):
         parent[rx] = ry
 
 
+def _first_char_style(container) -> tuple[float | None, str]:
+    """Font size + name of the first LTChar found in a container (walks one level of lines)."""
+    for child in container:
+        if isinstance(child, LTTextLine):
+            for c in child:
+                if isinstance(c, LTChar):
+                    return c.size, (c.fontname or "")
+            continue
+        if isinstance(child, LTChar):
+            return child.size, (child.fontname or "")
+    return None, ""
+
+
 def _walk(node, texts: list, shapes: list) -> None:
+    """Collect text as PARAGRAPH-level entries (LTTextBox) and shape primitives.
+
+    A LTTextBox is pdfminer's paragraph unit: all its wrapped lines belong to one
+    logical block. We join them into a single text string so a caption like
+    "Do not create new product / image arrangements or modify screen images."
+    lands as ONE entry, not four, and the LLM can't split it into subheader+body.
+    """
+    if isinstance(node, LTTextBox):
+        text = " ".join(node.get_text().split())
+        if text:
+            size, font = _first_char_style(node)
+            texts.append((node.bbox, text, size, font))
+        return
     if isinstance(node, LTTextLine):
+        # Loose text line outside any box — rare, but capture it.
         size = None
         font = ""
         for c in node:
