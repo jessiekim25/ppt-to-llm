@@ -211,6 +211,33 @@ def _attach_labels(
     return out
 
 
+def _fill_merged_cells_down(rows: list[list[str]]) -> list[list[str]]:
+    """Propagate the last non-empty value down each column across empty cells.
+
+    pdfplumber returns the merged-cell text in the top row of the merge and
+    empty strings in the other rows — so an empty cell almost always means
+    "merged with the cell above." Filling down restores the visual meaning
+    (both product rows share the same disclaimer). Legitimately-empty cells
+    in spec tables are rare enough that the tradeoff favors fill-down.
+    """
+    if not rows:
+        return rows
+    ncols = max(len(r) for r in rows)
+    last: list[str] = [""] * ncols
+    out: list[list[str]] = []
+    for row in rows:
+        padded = list(row) + [""] * (ncols - len(row))
+        new_row: list[str] = []
+        for c, cell in enumerate(padded):
+            if cell and cell.strip():
+                last[c] = cell
+                new_row.append(cell)
+            else:
+                new_row.append(last[c])
+        out.append(new_row)
+    return out
+
+
 def _extract_tables(pdf_path: Path, page_num: int) -> list[Table]:
     """Detect tables via pdfplumber using visible ruling lines.
 
@@ -235,7 +262,8 @@ def _extract_tables(pdf_path: Path, page_num: int) -> list[Table]:
                 if not data:
                     continue
                 columns = [str(c or "").strip() for c in data[0]]
-                rows = [[str(c or "").strip() for c in row] for row in data[1:]]
+                raw_rows = [[str(c or "").strip() for c in row] for row in data[1:]]
+                rows = _fill_merged_cells_down(raw_rows)
                 if not any(columns) and not any(any(r) for r in rows):
                     continue
                 x0, top, x1, bottom = t.bbox
