@@ -48,47 +48,50 @@ def _format_tables(tables: list) -> list[str]:
     return out
 
 
-def _render_subheader(sh: dict, depth: int = 2) -> str:
-    """Render a subheader (and its nested children) as a markdown-ish block."""
+def _block_from_subheader(sh: dict) -> dict | None:
+    """Turn one LLM subheader entry into a detail block; recurse into children."""
     if not isinstance(sh, dict):
-        return ""
+        return None
     title = str(sh.get("title", "") or "").strip()
+    body_parts: list[str] = []
     sh_detail = str(sh.get("detail", "") or "").strip()
-    sh_tables = _format_tables(sh.get("tables") or [])
-    children = sh.get("children") or []
-
-    block: list[str] = []
-    if title:
-        prefix = "#" * max(2, min(depth, 6))
-        block.append(f"{prefix} {title}")
     if sh_detail:
-        block.append(sh_detail)
-    if sh_tables:
-        block.append("\n".join(sh_tables))
-    for child in children:
-        child_block = _render_subheader(child, depth=depth + 1)
-        if child_block:
-            block.append(child_block)
-    return "\n\n".join(block)
+        body_parts.append(sh_detail)
+    sh_table_lines = _format_tables(sh.get("tables") or [])
+    if sh_table_lines:
+        body_parts.append("\n".join(sh_table_lines))
+    children = [b for b in (_block_from_subheader(c) for c in (sh.get("children") or [])) if b]
+
+    block: dict = {}
+    if title:
+        block["subheader"] = title
+    if body_parts:
+        block["body"] = "\n\n".join(body_parts)
+    if children:
+        block["children"] = children
+    return block or None
 
 
-def _compose_detail(extracted: dict) -> str:
-    """Concatenate slide-level detail + slide tables + rendered subheader hierarchy."""
-    parts: list[str] = []
+def _compose_detail(extracted: dict) -> list[dict]:
+    """Return the slide's text hierarchy as a list of {subheader, body, children} blocks."""
+    blocks: list[dict] = []
+
+    slide_body_parts: list[str] = []
     slide_detail = str(extracted.get("detail", "") or "").strip()
     if slide_detail:
-        parts.append(slide_detail)
-
+        slide_body_parts.append(slide_detail)
     slide_table_lines = _format_tables(extracted.get("tables") or [])
     if slide_table_lines:
-        parts.append("\n".join(slide_table_lines))
+        slide_body_parts.append("\n".join(slide_table_lines))
+    if slide_body_parts:
+        blocks.append({"body": "\n\n".join(slide_body_parts)})
 
     for sh in extracted.get("subheaders") or []:
-        rendered = _render_subheader(sh, depth=2)
-        if rendered:
-            parts.append(rendered)
+        block = _block_from_subheader(sh)
+        if block:
+            blocks.append(block)
 
-    return "\n\n".join(parts)
+    return blocks
 
 
 def parse_pages(spec: str) -> set[int]:

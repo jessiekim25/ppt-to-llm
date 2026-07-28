@@ -18,7 +18,19 @@ Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitt
   "section": "01 Brand Basics",
   "sub_section": "Hero Key Visual",
 
-  "detail": "Slide-level body text that isn't tied to any subheader.\n\ntable title\nSurface | Hex | Usage\nPrimary | #111111 | Global\n\n## 4:1 proportion\n\nParagraph belonging to 4:1.\n\n### How to build layout\n1. ...\n2. ...\n\n## 6:1 proportion\n\nParagraph belonging to 6:1.\n\n### How to build layout\n1. ...",
+  "detail": [
+    { "body": "Slide-level body text that isn't tied to any subheader." },
+    {
+      "subheader": "Product Logo",
+      "body": "The height of product logo should not exceed 90% of the SAMSUNG lettermark s-height. For OOH/Retails, please apply 80%."
+    },
+    {
+      "subheader": "Size ratio",
+      "children": [
+        { "body": "Size ratio (For OOH/Retails, please apply 80% of lettermark)" }
+      ]
+    }
+  ],
 
   "slide_image_path": "slide_042.png"
 }
@@ -27,7 +39,7 @@ Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitt
 Notes:
 
 - **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
-- **`detail`** is a single markdown-ish string with the slide's full text hierarchy: slide-level body first, then any tables rendered as `col1 | col2 | ...`, then each subheader as `## Title` (children as `### Title`, and so on). This preserves the "who owns what" nesting without exposing a separate `subheaders` array.
+- **`detail`** is a list of blocks in reading order. A block has any of `subheader` (heading text), `body` (paragraph, or table rendered as `col1 | col2 | ...` rows), and `children` (nested blocks with the same shape). Blocks omit fields they don't have — a slide-level paragraph is just `{"body": "..."}`, a heading with only a nested child is `{"subheader": "...", "children": [...]}`.
 - **`slide_image_path`** is a basename (e.g. `slide_042.png`) so the images can be moved to any folder without breaking references.
 
 ## How it works
@@ -35,7 +47,7 @@ Notes:
 1. For each slide, walk the PDF with `pdfminer.six` to collect text lines (with bboxes, font size, bold flag) and vector/raster primitives (`LTImage`, `LTCurve`, `LTRect`, `LTLine`), then cluster nearby primitives into figure regions so the LLM knows which text lines are captions to skip.
 2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM returns the slide-level fields (product, codename, section, sub_section, model) plus a structured hierarchy of subheaders + tables. No image is sent to the LLM.
 3. Render the slide to `slide_NNN.png` with `pypdfium2`.
-4. Flatten the LLM's subheader hierarchy (and any tables) into a single markdown-ish `detail` string, attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
+4. Turn the LLM's subheader hierarchy (and any tables) into the `detail` block list, attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
 
 Text extraction is geometric (pdfminer) — the LLM only interprets typography + coordinates to reconstruct hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
 
