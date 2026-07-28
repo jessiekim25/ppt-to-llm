@@ -21,7 +21,7 @@ All bboxes are TOP-LEFT origin, fractions of page (0-1). text_lines arrive rough
 Use text_lines' geometry and typography to reconstruct layout:
 - Larger `size` or `bold: true` marks a heading (section label, slide title, subheader).
 - Text lines whose bboxes share the same x0/x1 across multiple rows are a single column.
-- Text lines aligned into a grid (same x0/y0 patterns across rows and columns) are a table.
+- Text lines aligned into a grid (same x0/x1 across rows AND same y0 across columns) MAY be a table — but grid alignment alone is not enough. Apply the strict table test below before emitting one.
 - `figures[i].bbox` marks where an image sits — use it only to understand layout. A text line's position near/inside/across a figure does NOT make it a caption to drop.
 
 COMPLETENESS RULE — highest priority:
@@ -71,7 +71,18 @@ Content fields:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide (small `size`, near the bottom of the page).
 
-- tables: array of TEXT-ONLY tables — text lines arranged in a grid (same x0/x1 across rows). Each entry:
+- tables: array of TEXT-ONLY tables. A REAL TABLE requires ALL of:
+    (i) A row of column HEADERS that label what each column contains — headers describe the KIND of value below (e.g. "Format" / "File name", "Element" / "Spec" / "Notes", "Surface" / "Hex" / "Usage"). Headers are NOT topic names.
+    (ii) AT LEAST TWO data rows under those headers, where each row's cells relate to each other and are parallel in kind (all short values or all short phrases). One row of prose across columns is NOT a table.
+    (iii) A repeating row structure — the meaning of "column 1" is the same for every row.
+
+  A MULTI-COLUMN SUBHEADER LAYOUT is NOT a table, even when the visual grid alignment looks tabular. It has:
+    - Each column with its OWN topical heading (e.g. "Position", "Eco label size", "Clear Space", "Visibility", "Responsibility"; "AP(Gaming)" / "Display Innovation"; "Size" / "Arrangement" / "Hierarchy").
+    - Each column with its OWN paragraph of prose beneath its heading.
+    - The columns are independent topics discussed side-by-side, not rows of the same data schema.
+  Emit each such column as its OWN subheader entry with its prose in `detail`. NEVER pack a multi-column subheader layout into a single table row.
+
+  Table entry format:
   {
     "title": "<any caption or title printed above the table, or \"\" if none>",
     "columns": ["<first column header exactly as printed>", "<second column header>", ...],
