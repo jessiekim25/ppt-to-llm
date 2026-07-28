@@ -58,7 +58,7 @@ Return a JSON object with these fields.
 Slide-level string fields ("" if not visible):
 - product: general phone series (e.g. "Galaxy S"). "" if generic.
 - codename: campaign code name (e.g. "Miracle"). Only set if literally on the slide.
-- section: top-level section label at the very top-left of the slide (e.g. "01 Brand Basics", "Campaign Assets"). "" if none.
+- section: the top-left corner header — the deck's section/chapter indicator (e.g. "01 Brand Basics", "Campaign Assets", "Guidance usage", "Resources"). This is nearly ALWAYS present as small text near coordinates (x0 ≤ 0.15, y0 ≤ 0.06). Read that text verbatim and put it here — do NOT drop it as chrome. Only return "" if the slide genuinely has no top-left corner text.
 - sub_section: the slide's main title/heading (typically the largest text near the top of the slide, not counting the section label).
 - model: specific phone model shown (e.g. "Galaxy S26 Ultra"). "" if none.
 
@@ -71,16 +71,15 @@ Content fields:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide (small `size`, near the bottom of the page).
 
-- tables: array of TEXT-ONLY tables. A REAL TABLE requires ALL of:
-    (i) A row of column HEADERS that label what each column contains — headers describe the KIND of value below (e.g. "Format" / "File name", "Element" / "Spec" / "Notes", "Surface" / "Hex" / "Usage"). Headers are NOT topic names.
-    (ii) AT LEAST TWO data rows under those headers, where each row's cells relate to each other and are parallel in kind (all short values or all short phrases). One row of prose across columns is NOT a table.
-    (iii) A repeating row structure — the meaning of "column 1" is the same for every row.
+- tables: array of TEXT-ONLY tables. A REAL TABLE has ALL of:
+    (i) A row of 2+ short column HEADERS at similar y (e.g. "Product KV" / "Disclaimer", "Format" / "File name", "Element" / "Spec" / "Notes", "Surface" / "Hex" / "Usage").
+    (ii) AT LEAST TWO DATA ROWS below the headers, each row having a cell in every column and all cells of a row at similar y.
+    (iii) Cells in each column are PARALLEL IN KIND across rows — e.g. one column of product-KV names paired with one column of disclaimer text, one column of filenames paired with one column of format numbers.
 
-  A MULTI-COLUMN SUBHEADER LAYOUT is NOT a table, even when the visual grid alignment looks tabular. It has:
-    - Each column with its OWN topical heading (e.g. "Position", "Eco label size", "Clear Space", "Visibility", "Responsibility"; "AP(Gaming)" / "Display Innovation"; "Size" / "Arrangement" / "Hierarchy").
-    - Each column with its OWN paragraph of prose beneath its heading.
-    - The columns are independent topics discussed side-by-side, not rows of the same data schema.
-  Emit each such column as its OWN subheader entry with its prose in `detail`. NEVER pack a multi-column subheader layout into a single table row.
+  If any of these fails — ESPECIALLY if there is only ONE row of prose bodies beneath the headings — it is NOT a table. In that case, emit each column as its OWN subheader entry (title = the column heading, detail = its prose body). Examples that ARE multi-column subheader layouts, NOT tables:
+    - "Position" / "Eco label size" / "Clear Space" / "Visibility" / "Responsibility" each with one paragraph beneath.
+    - "AP(Gaming)" / "Display Innovation" each with one paragraph beneath.
+    - "Size" / "Arrangement" / "Hierarchy" each with one paragraph beneath.
 
   Table entry format:
   {

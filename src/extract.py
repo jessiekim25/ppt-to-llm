@@ -191,6 +191,22 @@ def _resolve_page_nums(pdf_path: Path, pages: set[int] | None, limit: int) -> li
     return nums[:limit] if limit else nums
 
 
+def _backfill_sections(records: list[dict]) -> None:
+    """Slides without an explicit `section` inherit the last non-empty one seen.
+
+    Section indicators sit in the top-left corner of nearly every slide in a
+    deck but the LLM sometimes misses them. Sections rarely change mid-deck,
+    so carrying the last seen value forward fills the gaps correctly.
+    """
+    last = ""
+    for r in records:
+        current = r.get("section", "").strip()
+        if current:
+            last = current
+        elif last:
+            r["section"] = last
+
+
 def main() -> None:
     args = parse_args()
 
@@ -234,6 +250,8 @@ def main() -> None:
                 doc_id=doc_id,
             )
         )
+
+    _backfill_sections(records)
 
     if args.dry_run:
         for r in records:
