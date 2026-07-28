@@ -25,7 +25,21 @@ Use text_lines' geometry and typography to reconstruct layout:
 - `figures[i].bbox` marks where an image sits — use it only to understand layout. A text line's position near/inside/across a figure does NOT make it a caption to drop.
 
 COMPLETENESS RULE — highest priority:
-Every text line in the payload MUST appear somewhere in your output — as one of the slide-level string fields, in slide-level `detail`, inside a subheader's `title`/`detail`, as a table cell, or nested in `children`. NEVER drop a text line as "noise", "figure caption", "already visible on the slide", or "duplicate". If you're unsure where a line belongs, put it in slide-level `detail` rather than dropping it. The one exception: purely decorative fragments with no words (a stray dash, a page-number digit alone in a corner) may be omitted — everything else must survive.
+Every text line in the payload MUST appear somewhere in your output — as one of the slide-level string fields, in slide-level `detail`, inside a subheader's `title`/`detail`, as a table cell, or nested in `children`. NEVER drop a text line as "noise", "figure caption", "already visible on the slide", or "duplicate". If you're unsure where a line belongs, put it in slide-level `detail` rather than dropping it. The only exemptions are purely decorative fragments with no words (stray dashes, arrows) and the PAGE CHROME described below.
+
+PAGE CHROME — always drop, never emit anywhere in the output:
+These are templated running headers/footers repeated on every slide and are not slide content.
+
+TOP EDGE:
+- Corner stamps in the top-RIGHT (e.g. "Confidential", "Draft", "Internal Only", "Do Not Distribute", "Proprietary"). NOTE: the top-LEFT section indicator (e.g. "01 Brand Basics", "Guidance usage") is NOT chrome — it belongs in the `section` field.
+
+BOTTOM EDGE:
+- Navigation strips listing section names separated by " | " (e.g. "TOC | Strategy | Campaign assets | Guidance usage | Resources").
+- Copyright / legal footers (e.g. "Copyright © 2013-2025 Samsung Electronics Co., Ltd. All Rights Reserved.").
+- Repeated deck-title footers naming the whole deck (e.g. "Galaxy S26 Campaign visual guidelines").
+- Page-number-only lines (a small isolated integer, or "N of M").
+
+A text line is page chrome when it sits within ~5% of the top or bottom page edge AND matches one of the patterns above. Do NOT drop legitimate slide content that just happens to be near an edge (the slide's sub_section title near the top is NOT chrome; small footnotes/disclaimers that are unique to the slide are NOT chrome).
 
 MULTI-LINE TITLES: if two or more consecutive text lines near the top of the slide share the same (or very close) `size` and sit at consecutive y-positions with matching x0, they are ONE title that wrapped to multiple lines. Concatenate them with a single space and put the joined string in `sub_section`. Never emit only the first line.
 
