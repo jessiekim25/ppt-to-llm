@@ -43,26 +43,48 @@ def _render_table(t: dict) -> str:
     return "\n".join(lines)
 
 
-def _block_from_subheader(sh: dict) -> dict | None:
-    """Turn one LLM subheader entry into a detail block; recurse into children.
+def _is_valid_subheader_title(title: str) -> bool:
+    """Enforce the prompt's (α) rule: <=10 words, no sentence-terminal punctuation.
 
-    A subheader with only a title (no body, no children) collapses to a
-    plain body block — never lose the text, but don't advertise a section anchor
-    that has no content beneath it. LLM no longer emits tables; pdfplumber is
-    the sole source, so ignore any `tables` field the LLM emits.
+    A trailing colon is fine ("How to build layout:" is a real subheader).
+    A trailing period/question/exclamation mark means it's a sentence, not a label.
+    """
+    t = title.rstrip()
+    if not t:
+        return False
+    if t[-1] in ".?!":
+        return False
+    if len(t.split()) > 10:
+        return False
+    return True
+
+
+def _block_from_subheader(sh: dict) -> list[dict]:
+    """Turn one LLM subheader entry into a LIST of detail blocks (usually 1).
+
+    - A subheader whose title fails validation (too long, or ends in a period)
+      is demoted: the title is prepended to the body as prose, children hoist
+      as sibling blocks in the parent's list. That way misclassified sentences
+      keep their text and their real children.
+    - A subheader with only a title collapses to a plain body block.
+    - LLM no longer emits `tables`; any such field is ignored.
     """
     if not isinstance(sh, dict):
-        return None
+        return []
     title = str(sh.get("title", "") or "").strip()
     body = str(sh.get("detail", "") or "").strip()
+
     child_blocks: list[dict] = []
     for c in sh.get("children") or []:
-        child = _block_from_subheader(c)
-        if child:
-            child_blocks.append(child)
+        child_blocks.extend(_block_from_subheader(c))
+
+    if title and not _is_valid_subheader_title(title):
+        merged = f"{title} {body}".strip() if body else title
+        demoted = [{"body": merged}] if merged else []
+        return demoted + child_blocks
 
     if title and not body and not child_blocks:
-        return {"body": title}
+        return [{"body": title}]
 
     block: dict = {}
     if title:
@@ -71,7 +93,7 @@ def _block_from_subheader(sh: dict) -> dict | None:
         block["body"] = body
     if child_blocks:
         block["children"] = child_blocks
-    return block or None
+    return [block] if block else []
 
 
 def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
@@ -93,9 +115,7 @@ def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> 
             blocks.append({"table": rendered})
 
     for sh in extracted.get("subheaders") or []:
-        block = _block_from_subheader(sh)
-        if block:
-            blocks.append(block)
+        blocks.extend(_block_from_subheader(sh))
 
     return blocks
 

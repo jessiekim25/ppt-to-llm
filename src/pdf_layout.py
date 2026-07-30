@@ -238,13 +238,31 @@ def _fill_merged_cells_down(rows: list[list[str]]) -> list[list[str]]:
     return out
 
 
+def _looks_like_real_table(columns: list[str], rows: list[list[str]]) -> bool:
+    """Reject pdfplumber junk: single-cell "tables" from stray rules, single-char noise, etc."""
+    non_empty_cols = [c for c in columns if c.strip()]
+    non_empty_rows = [r for r in rows if any(c.strip() for c in r)]
+    if len(non_empty_cols) < 2 and not any(len([c for c in r if c.strip()]) >= 2 for r in non_empty_rows):
+        return False  # need at least 2 real columns somewhere
+    if not non_empty_rows:
+        return False
+    # Total non-whitespace text across the whole table must clear a floor —
+    # a "table" of scattered single letters is almost always OCR/border noise.
+    total_chars = sum(len(c.strip()) for c in columns) + sum(
+        len(c.strip()) for row in rows for c in row
+    )
+    if total_chars < 15:
+        return False
+    return True
+
+
 def _extract_tables(pdf_path: Path, page_num: int) -> list[Table]:
     """Detect tables via pdfplumber using visible ruling lines.
 
     Restricted to lines-only detection (`vertical_strategy`/`horizontal_strategy` = "lines")
     to avoid false-positive tables on multi-column subheader layouts that only
-    happen to align on a grid. If your deck uses borderless tables and needs
-    text-alignment fallback, loosen these settings.
+    happen to align on a grid. Junk tables (stray rules producing 1-cell
+    "tables" with single-char content) are filtered by _looks_like_real_table.
     """
     tables_out: list[Table] = []
     try:
@@ -264,7 +282,7 @@ def _extract_tables(pdf_path: Path, page_num: int) -> list[Table]:
                 columns = [str(c or "").strip() for c in data[0]]
                 raw_rows = [[str(c or "").strip() for c in row] for row in data[1:]]
                 rows = _fill_merged_cells_down(raw_rows)
-                if not any(columns) and not any(any(r) for r in rows):
+                if not _looks_like_real_table(columns, rows):
                     continue
                 x0, top, x1, bottom = t.bbox
                 tables_out.append(
