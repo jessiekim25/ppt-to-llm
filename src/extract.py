@@ -229,6 +229,79 @@ def _normalize_for_match(s: str) -> str:
     return " ".join(str(s).lower().split())
 
 
+def _build_source_haystack(text_lines: list[TextLine]) -> str:
+    """Normalized concatenation of every pdfminer text_line — the source-of-truth
+    corpus for grounding checks."""
+    return _normalize_for_match(" ".join(tl.text for tl in text_lines))
+
+
+def _is_grounded(candidate: str, haystack: str, min_overlap: float = 0.6) -> bool:
+    """True if enough of `candidate`'s meaningful words appear in the source.
+
+    Anything with fewer than 3 meaningful words (3+ chars each) skips the check —
+    short strings like "Galaxy S26" are too short to verify by overlap and are
+    unlikely to be hallucinated anyway. Trivial short words (a, the, of, ...)
+    don't count toward the overlap denominator.
+    """
+    words = [w for w in re.findall(r"\w+", (candidate or "").lower()) if len(w) >= 3]
+    if len(words) < 3:
+        return True
+    hits = sum(1 for w in words if w in haystack)
+    return hits / len(words) >= min_overlap
+
+
+def _sanitize_subheader(sh: dict, haystack: str) -> dict | None:
+    if not isinstance(sh, dict):
+        return None
+    title = str(sh.get("title", "") or "").strip()
+    detail = str(sh.get("detail", "") or "").strip()
+    if title and not _is_grounded(title, haystack):
+        print(f"  ! dropped ungrounded subheader title: {title!r}")
+        title = ""
+    if detail and not _is_grounded(detail, haystack):
+        print(f"  ! dropped ungrounded subheader body ({len(detail)} chars)")
+        detail = ""
+    children = [
+        c for c in (_sanitize_subheader(x, haystack) for x in (sh.get("children") or [])) if c
+    ]
+    if not (title or detail or children):
+        return None
+    out: dict = {}
+    if title:
+        out["title"] = title
+    if detail:
+        out["detail"] = detail
+    if children:
+        out["children"] = children
+    return out
+
+
+def _sanitize_llm_output(extracted: dict, haystack: str) -> dict:
+    """Drop any LLM-emitted string whose words aren't grounded in the pdfminer source.
+
+    Slide-level fields fall back to empty (and then to CLI defaults where
+    applicable). Subheader titles/bodies are individually cleared if
+    ungrounded; empty subheaders are removed.
+    """
+    out = dict(extracted)
+    for k in ("product", "codename", "sub_section", "model", "section"):
+        v = str(out.get(k, "") or "").strip()
+        if v and not _is_grounded(v, haystack):
+            print(f"  ! dropped ungrounded {k}: {v!r}")
+            out[k] = ""
+
+    detail = str(out.get("detail", "") or "").strip()
+    if detail and not _is_grounded(detail, haystack):
+        print(f"  ! dropped ungrounded slide-level detail ({len(detail)} chars)")
+        detail = ""
+    out["detail"] = detail
+
+    out["subheaders"] = [
+        sh for sh in (_sanitize_subheader(s, haystack) for s in (out.get("subheaders") or [])) if sh
+    ]
+    return out
+
+
 def _collect_block_text(block: dict, parts: list[str]) -> None:
     if not isinstance(block, dict):
         return
@@ -324,6 +397,8 @@ def main() -> None:
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
+
+        data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
 
         slide_image_name = f"slide_{page_num:03d}.png"
         rendered = render_page(pdf_path, page_num, dpi=args.dpi)
