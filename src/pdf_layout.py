@@ -311,6 +311,16 @@ def _text_inside_any_bbox(
     return False
 
 
+def _on_canvas(bbox_pct: tuple[float, float, float, float], tol: float = 0.02) -> bool:
+    """True if the bbox's center sits inside the visible page (with a small tolerance)."""
+    x0, y0, x1, y1 = bbox_pct
+    if x1 <= x0 or y1 <= y0:
+        return False
+    cx = (x0 + x1) / 2
+    cy = (y0 + y1) / 2
+    return -tol <= cx <= 1 + tol and -tol <= cy <= 1 + tol
+
+
 def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
     """Extract text lines + figure clusters + tables from a single 1-indexed page.
 
@@ -347,6 +357,11 @@ def extract_page_layout(pdf_path: Path, page_num: int) -> PageLayout:
             )
             for (b, t, s, f) in texts_raw
         ]
+        # Drop off-canvas text (template placeholders, off-slide notes, master-
+        # page strings) so the coverage check doesn't dump invisible PDF content
+        # into slide records. A small tolerance lets bboxes that clip the edge
+        # by a fraction still count as on-canvas.
+        text_lines = [tl for tl in text_lines if _on_canvas(tl.bbox_pct)]
         if table_bboxes:
             text_lines = [
                 tl for tl in text_lines
