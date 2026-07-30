@@ -341,6 +341,54 @@ def _is_page_chrome_bbox(bbox_pct: tuple[float, float, float, float]) -> bool:
     return False
 
 
+def _dedupe_block(block: dict, seen: set[str]) -> None:
+    """Clear body/table fields whose normalized content already appeared earlier."""
+    if not isinstance(block, dict):
+        return
+    body = block.get("body")
+    if body:
+        norm = _normalize_for_match(body)
+        if norm in seen:
+            del block["body"]
+        else:
+            seen.add(norm)
+    table = block.get("table")
+    if table:
+        norm = _normalize_for_match(table)
+        if norm in seen:
+            del block["table"]
+        else:
+            seen.add(norm)
+    for child in block.get("children") or []:
+        _dedupe_block(child, seen)
+
+
+def _prune_empty_blocks(blocks: list[dict]) -> list[dict]:
+    """Recursively remove blocks left empty after dedupe."""
+    out: list[dict] = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        children = _prune_empty_blocks(b.get("children") or [])
+        if children:
+            b["children"] = children
+        else:
+            b.pop("children", None)
+        if b.get("subheader") or b.get("body") or b.get("table") or b.get("children"):
+            out.append(b)
+    return out
+
+
+def _dedupe_detail(record: dict) -> None:
+    """Ensure no body/table content appears twice in the record's detail tree."""
+    seen: set[str] = set()
+    for block in record.get("detail") or []:
+        _dedupe_block(block, seen)
+    record["detail"] = _prune_empty_blocks(record.get("detail") or [])
+    if not record["detail"]:
+        del record["detail"]
+
+
 def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
     """Append any pdfminer text_line whose content is missing from the record's output.
 
@@ -420,6 +468,7 @@ def main() -> None:
     for record in records:
         tls = text_lines_by_page.get(record.get("slide_num", -1), [])
         _append_missing_text(record, tls)
+        _dedupe_detail(record)
 
     if args.dry_run:
         for r in records:
