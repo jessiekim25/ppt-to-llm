@@ -341,17 +341,41 @@ def _is_page_chrome_bbox(bbox_pct: tuple[float, float, float, float]) -> bool:
     return False
 
 
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Coarse sentence split — good enough for dedupe. Keeps bullet fragments intact."""
+    return [p.strip() for p in _SENTENCE_SPLIT.split(text.strip()) if p.strip()]
+
+
 def _dedupe_block(block: dict, seen: set[str]) -> None:
-    """Clear body/table fields whose normalized content already appeared earlier."""
+    """Drop already-seen sentences from body and already-seen strings from table.
+
+    Body dedupe is SENTENCE-level: the coverage-check often appends a full
+    pdfminer paragraph when the LLM captured only its first sentence, so
+    exact-body matches miss the duplication. Split on sentence terminators
+    and drop any sentence whose normalized form appeared earlier.
+    """
     if not isinstance(block, dict):
         return
     body = block.get("body")
     if body:
-        norm = _normalize_for_match(body)
-        if norm in seen:
-            del block["body"]
-        else:
+        kept: list[str] = []
+        for sent in _split_sentences(body):
+            norm = _normalize_for_match(sent)
+            if len(norm) < 5:
+                # too short to dedupe meaningfully; keep as-is without adding to seen
+                kept.append(sent)
+                continue
+            if norm in seen:
+                continue
             seen.add(norm)
+            kept.append(sent)
+        if kept:
+            block["body"] = " ".join(kept)
+        else:
+            del block["body"]
     table = block.get("table")
     if table:
         norm = _normalize_for_match(table)
