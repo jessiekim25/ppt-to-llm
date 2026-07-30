@@ -8,7 +8,7 @@ from openai import OpenAI
 from shared.settings import get_settings
 
 from .llm import build_payload, extract_slide
-from .pdf_layout import Table, extract_page_layout
+from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
 
 SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
@@ -43,30 +43,19 @@ def _render_table(t: dict) -> str:
     return "\n".join(lines)
 
 
-def _table_blocks(tables: list) -> list[dict]:
-    """One {"table": "..."} block per non-empty LLM table entry."""
-    out: list[dict] = []
-    for t in tables or []:
-        if not isinstance(t, dict):
-            continue
-        rendered = _render_table(t).strip()
-        if rendered:
-            out.append({"table": rendered})
-    return out
-
-
 def _block_from_subheader(sh: dict) -> dict | None:
     """Turn one LLM subheader entry into a detail block; recurse into children.
 
-    A subheader with only a title (no body, tables, or children) collapses to a
+    A subheader with only a title (no body, no children) collapses to a
     plain body block — never lose the text, but don't advertise a section anchor
-    that has no content beneath it.
+    that has no content beneath it. LLM no longer emits tables; pdfplumber is
+    the sole source, so ignore any `tables` field the LLM emits.
     """
     if not isinstance(sh, dict):
         return None
     title = str(sh.get("title", "") or "").strip()
     body = str(sh.get("detail", "") or "").strip()
-    child_blocks = _table_blocks(sh.get("tables") or [])
+    child_blocks: list[dict] = []
     for c in sh.get("children") or []:
         child = _block_from_subheader(c)
         if child:
@@ -88,10 +77,9 @@ def _block_from_subheader(sh: dict) -> dict | None:
 def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
     """Return the slide's text hierarchy as a list of blocks in reading order.
 
-    Slide-level tables come from pdfplumber (`pre_extracted_tables`) when
-    available, since its ruling-line detection is more reliable than the LLM's
-    grid-inference. The LLM's `tables[]` output is used as a fallback when
-    pdfplumber found nothing.
+    Tables come exclusively from pdfplumber. The LLM no longer emits `tables`,
+    so grid-aligned image labels or short captions become subheaders instead of
+    being packed into a fake table.
     """
     blocks: list[dict] = []
 
@@ -99,13 +87,10 @@ def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> 
     if slide_body:
         blocks.append({"body": slide_body})
 
-    if pre_extracted_tables:
-        for t in pre_extracted_tables:
-            rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
-            if rendered:
-                blocks.append({"table": rendered})
-    else:
-        blocks.extend(_table_blocks(extracted.get("tables") or []))
+    for t in pre_extracted_tables:
+        rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
+        if rendered:
+            blocks.append({"table": rendered})
 
     for sh in extracted.get("subheaders") or []:
         block = _block_from_subheader(sh)
@@ -220,6 +205,75 @@ def _backfill_sections(records: list[dict]) -> None:
             r["section"] = last
 
 
+def _normalize_for_match(s: str) -> str:
+    return " ".join(str(s).lower().split())
+
+
+def _collect_block_text(block: dict, parts: list[str]) -> None:
+    if not isinstance(block, dict):
+        return
+    for k in ("subheader", "body", "table"):
+        v = block.get(k)
+        if v:
+            parts.append(str(v))
+    for child in block.get("children") or []:
+        _collect_block_text(child, parts)
+
+
+def _collect_output_text(record: dict) -> str:
+    """Concatenate every string this record emits, normalized for substring matching."""
+    parts: list[str] = []
+    for k in SLIDE_FIELDS:
+        v = record.get(k)
+        if v:
+            parts.append(str(v))
+    for block in record.get("detail") or []:
+        _collect_block_text(block, parts)
+    return _normalize_for_match(" ".join(parts))
+
+
+def _is_page_chrome_bbox(bbox_pct: tuple[float, float, float, float]) -> bool:
+    """Skip page-chrome text lines so the coverage check doesn't re-add them.
+
+    Matches the PAGE CHROME rule in the prompt: top-right stamps and anything
+    hugging the bottom edge. The top-left section indicator is deliberately
+    NOT excluded — it should have been captured as `section`, and if it wasn't,
+    _backfill_sections handles it before we get here.
+    """
+    x0, y0, x1, y1 = bbox_pct
+    if y1 < 0.05 and x0 > 0.7:
+        return True
+    if y0 > 0.94:
+        return True
+    return False
+
+
+def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
+    """Append any pdfminer text_line whose content is missing from the record's output.
+
+    Belt-and-suspenders for the prompt's COMPLETENESS RULE. Uses a case- and
+    whitespace-insensitive substring check: if a text_line's content doesn't
+    appear anywhere the LLM emitted, drop it verbatim into a fallback body
+    block at the end of `detail`.
+    """
+    output = _collect_output_text(record)
+    missing: list[str] = []
+    for tl in text_lines:
+        if _is_page_chrome_bbox(tl.bbox_pct):
+            continue
+        norm = _normalize_for_match(tl.text)
+        if not norm or len(norm) < 3:
+            continue
+        if norm in output:
+            continue
+        missing.append(tl.text.strip())
+    if not missing:
+        return
+    if "detail" not in record:
+        record["detail"] = []
+    record["detail"].append({"body": "\n".join(missing)})
+
+
 def main() -> None:
     args = parse_args()
 
@@ -240,6 +294,7 @@ def main() -> None:
     doc_id = _slug(pdf_path.stem)
 
     records: list[dict] = []
+    text_lines_by_page: dict[int, list[TextLine]] = {}
     for i, page_num in enumerate(page_nums, start=1):
         print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
@@ -264,8 +319,12 @@ def main() -> None:
                 pre_extracted_tables=layout.tables,
             )
         )
+        text_lines_by_page[page_num] = layout.text_lines
 
     _backfill_sections(records)
+    for record in records:
+        tls = text_lines_by_page.get(record.get("slide_num", -1), [])
+        _append_missing_text(record, tls)
 
     if args.dry_run:
         for r in records:

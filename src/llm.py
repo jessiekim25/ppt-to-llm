@@ -21,7 +21,7 @@ All bboxes are TOP-LEFT origin, fractions of page (0-1). text_lines arrive rough
 Use text_lines' geometry and typography to reconstruct layout:
 - Larger `size` or `bold: true` marks a heading (section label, slide title, subheader).
 - Text lines whose bboxes share the same x0/x1 across multiple rows are a single column.
-- Text lines aligned into a grid (same x0/x1 across rows AND same y0 across columns) MAY be a table — but grid alignment alone is not enough. Apply the strict table test below before emitting one.
+- Tables have already been extracted geometrically. You do NOT emit tables in your output — there is no `tables` field. If you see text lines that visually resemble a table (grid-aligned rows/columns of image labels or short captions), treat each column as a separate subheader.
 - `figures[i].bbox` marks where an image sits — use it only to understand layout. A text line's position near/inside/across a figure does NOT make it a caption to drop.
 
 COMPLETENESS RULE — highest priority:
@@ -71,51 +71,30 @@ Content fields:
     * running text above a horizontal rule that introduces the slide (e.g. "Type family and weight distribution.");
     * footnotes, disclaimers, or fine print at the very bottom of the slide (small `size`, near the bottom of the page).
 
-- tables: array of TEXT-ONLY tables. A REAL TABLE has ALL of:
-    (i) A row of 2+ short column HEADERS at similar y (e.g. "Product KV" / "Disclaimer", "Format" / "File name", "Element" / "Spec" / "Notes", "Surface" / "Hex" / "Usage").
-    (ii) AT LEAST TWO DATA ROWS below the headers, each row having a cell in every column and all cells of a row at similar y.
-    (iii) Cells in each column are PARALLEL IN KIND across rows — e.g. one column of product-KV names paired with one column of disclaimer text, one column of filenames paired with one column of format numbers.
-
-  If any of these fails — ESPECIALLY if there is only ONE row of prose bodies beneath the headings — it is NOT a table. In that case, emit each column as its OWN subheader entry (title = the column heading, detail = its prose body). Examples that ARE multi-column subheader layouts, NOT tables:
-    - "Position" / "Eco label size" / "Clear Space" / "Visibility" / "Responsibility" each with one paragraph beneath.
-    - "AP(Gaming)" / "Display Innovation" each with one paragraph beneath.
-    - "Size" / "Arrangement" / "Hierarchy" each with one paragraph beneath.
-
-  Table entry format:
-  {
-    "title": "<any caption or title printed above the table, or \"\" if none>",
-    "columns": ["<first column header exactly as printed>", "<second column header>", ...],
-    "rows": [
-      ["<row 1 cell 1>", "<row 1 cell 2>", ...],
-      ["<row 2 cell 1>", "<row 2 cell 2>", ...]
-    ]
-  }
-  Use the column headers actually printed on the slide; never invent, rename, translate, or substitute a header.
-  Cells often contain multiple lines — join those with "\\n" inside the single cell string.
-  NUMBERED BADGE CELLS: small isolated single digits ("1", "2", "3", ...) inside a table cell are numbered badges — return the digit verbatim as the cell value. Never leave the cell empty.
-  When one logical table is laid out visually as TWO side-by-side identical-header column pairs (e.g. two "Format | File name" pairs stacked side by side), treat it as ONE table with one set of column headers and all rows concatenated in reading order.
-  Return "tables": [] if the slide has no tables.
-
-- subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is any bold or larger-font short label that introduces a block of descriptive body text OR a nested sub-block. Includes:
+- subheaders: array describing every distinct heading + descriptive-text pair on the slide, other than the main slide title itself. A subheader is a SHORT LABEL that introduces a block of descriptive body text OR a nested sub-block. Includes:
     * sub-titles that horizontally divide the slide into sections;
     * bold column headings at the top of side-by-side text blocks in a multi-column layout — these ARE column anchors (see COLUMN STRUCTURE);
     * labels marking each cell of a grid layout, with a paragraph next to or below;
-    * bold captions under figures that name each panel type — text sitting under a figures[i].bbox is a caption (see above); text sitting BETWEEN two figures with descriptive text below IS a subheader.
+    * captions under figures that name each panel type — text sitting BETWEEN two figures with descriptive text below IS a subheader.
   Capture ALL such headings in reading order (top-to-bottom then left-to-right, respecting COLUMN STRUCTURE above). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete.
 
+  WHAT COUNTS AS A SUBHEADER — all three must hold:
+    (α) At most 10 words, and it does NOT end with a period. A phrase that ends with "." is a sentence, not a subheader — it belongs in `detail`. (A trailing ":" is fine and common on subheaders like "How to build layout:".)
+    (β) A clear typographic distinction from the text that follows: strictly larger `size`, OR `bold: true` when the body below is not bold.
+    (γ) At least one text line of descriptive body directly under/beside it that would become its `detail` or a nested `children` entry. A short bold phrase with nothing beneath it is decorative — put it in slide-level `detail` verbatim, do not emit as a subheader.
+  If a candidate fails ANY of (α)/(β)/(γ), it is body text, not a subheader — merge it back into the surrounding paragraph in `detail` (or its parent subheader's `detail`).
+
   STRICT RULES:
-    (a) EVERY heading must be its OWN entry with its heading text in the `title` field. Do NOT collapse multiple headings into one subheader's `detail` as a bulleted list.
+    (a) EVERY qualifying heading must be its OWN entry with its heading text in the `title` field. Do NOT collapse multiple headings into one subheader's `detail` as a bulleted list.
     (b) `title` contains ONLY the heading text — never the description, never a leading dash or bullet.
     (c) `detail` contains the full descriptive body text for THAT subheader only — never other subheaders' titles as bullets, never content that belongs to a different column.
     (d) Do not invent headings, and do not use the main slide title as a subheader.
     (e) NESTING: if a subheader's visual area contains another labeled sub-block below it (e.g. "4:1 proportion" column contains a "How to build layout:" heading with a numbered list beneath), put that inner sub-block in the parent's `children` array — do NOT flatten it, do NOT stuff the child's content into the parent's `detail`, and do NOT lift the child to the slide-level detail. A child subheader has the same schema as its parent and can itself have `children`.
-    (f) A subheader must have at least one of: non-empty `detail`, non-empty `tables`, non-empty `children`. If a candidate heading has none of these, it's a caption or noise — omit it entirely (see EMPTY SUBHEADER RULE).
 
   Each entry:
   {
-    "title": "<the heading text exactly as printed>",
+    "title": "<the heading text exactly as printed, no trailing period, ≤10 words>",
     "detail": "<all descriptive body text under/next to this heading (excluding any child subheaders' content), verbatim; \"\" if none>",
-    "tables": [ <text-only table objects that belong to this subheader> ],
     "children": [ <nested subheader entries; [] if none> ]
   }
 
