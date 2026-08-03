@@ -1,42 +1,66 @@
 # ppt-to-llm
 
-Convert a Samsung campaign visual identity PDF into structured rows in `jihwi.brand_guidelines` — one row per slide, plus per-slide image crops on disk — so an LLM (or a plain SQL query) can retrieve any slide's content instantly.
+Convert a Samsung campaign visual identity PDF (or PPT export) into one structured **JSON record per slide**, written as a per-deck `slides.jsonl` file alongside one PNG screenshot per slide. The JSONL is designed to be fed straight to an LLM (or indexed for retrieval) without a database in the middle — layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
 
-Each slide becomes one row with these fields:
+## Slide record schema
 
-| column        | meaning                                                                                     |
-| ------------- | ------------------------------------------------------------------------------------------- |
-| `product`     | product series/line the slide belongs to (e.g. `Galaxy S26`)                                |
-| `codename`    | campaign project code name                                                                  |
-| `section`     | top-left section label of the slide (one of the four deck sections)                         |
-| `sub_section` | slide title / heading                                                                       |
-| `detail`      | slide body text — subheaders rendered as `## Heading`, nested children as `###`, plus tables |
-| `model`       | specific product model shown on the slide (e.g. `Galaxy S26 Ultra`)                          |
-| `image_path`  | absolute path of the per-slide assets folder containing the cropped images                  |
-| `page`        | source slide number in the PDF (e.g. `42`)                                                  |
+Each line in `slides.jsonl` is one slide. Slide-level fields are optional (omitted rather than `null`).
+
+```json
+{
+  "doc_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6",
+  "slide_num": 42,
+  "slide_id": "2026_Galaxy_Miracle_VIS_Guidelines_v1_6#042",
+
+  "product": "Galaxy S26",
+  "codename": "Miracle",
+  "model": "Galaxy S26 Ultra",
+  "section": "01 Brand Basics",
+  "sub_section": "Hero Key Visual",
+
+  "detail": [
+    { "body": "Slide-level body text that isn't tied to any subheader." },
+    { "table": "Approved backgrounds\nSurface | Hex\nPrimary | #111111\nAccent | #E4002B" },
+    {
+      "subheader": "Product Logo",
+      "body": "The height of product logo should not exceed 90% of the SAMSUNG lettermark s-height.",
+      "children": [
+        { "table": "Sizing\nContext | Size\nPrint | 90%\nOOH | 80%" }
+      ]
+    },
+    {
+      "subheader": "Size ratio",
+      "children": [
+        { "body": "Size ratio (For OOH/Retails, please apply 80% of lettermark)" }
+      ]
+    }
+  ],
+
+  "slide_image_path": "slide_042.png"
+}
+```
+
+Notes:
+
+- **`slide_id`** = `{doc_id}#{slide_num:03d}` — stable primary key across re-runs, easy to reference from LLM outputs.
+- **`detail`** is a list of blocks in reading order. A block has any of:
+  - `subheader` — heading text.
+  - `body` — paragraph text.
+  - `table` — one table rendered as `title\ncol1 | col2 | ...\ncell11 | cell12 | ...`; multi-line cells are joined with ` / `. Each table is its own block, never mixed into a body string.
+  - `children` — nested blocks with the same shape.
+  Blocks omit fields they don't have — a slide-level paragraph is just `{"body": "..."}`, a table is `{"table": "..."}`, a heading that only owns a nested child is `{"subheader": "...", "children": [...]}`.
+- **`slide_image_path`** is a basename (e.g. `slide_042.png`) so the images can be moved to any folder without breaking references.
 
 ## How it works
 
-1. Render each PDF page to PNG with `pypdfium2` (pure-Python, no Poppler needed).
-2. Send each PNG to an OpenAI vision model (`gpt-4o` by default) with a strict JSON extraction prompt that returns structured text fields plus `images[]` (one entry per distinct visual region with a label + bbox).
-3. Crop the rendered slide to each `bbox_pct` with generous padding and save it as `img_NN__<label>.png` in a per-slide assets folder.
-4. Insert one row per slide into `jihwi.brand_guidelines`; `image_path` points at the assets folder.
+1. For each slide:
+   - `pdfminer.six` collects text lines (with bboxes, font size, bold flag) at paragraph (LTTextBox) granularity, plus vector/raster primitives that cluster into figure regions.
+   - `pdfplumber` detects any ruled tables on the page and returns their columns/rows/bboxes. Text lines whose center falls inside a detected table bbox are dropped from the LLM payload so the pre-extracted table content stays authoritative.
+2. Serialize the layout into a compact JSON payload — text lines + figure bboxes — and send it to an OpenAI text model (`gpt-4o` by default). The LLM returns the slide-level fields (product, codename, section, sub_section, model) plus a structured hierarchy of subheaders + fallback tables. No image is sent to the LLM.
+3. Render the slide to `slide_NNN.png` with `pypdfium2`.
+4. Compose the `detail` block list — slide body, pdfplumber's tables (or LLM's if pdfplumber found none), then the LLM's subheader hierarchy — attach the screenshot basename as `slide_image_path`, and append one JSON record per slide to `<output-dir>/<deck-stem>/slides.jsonl`.
 
-Subheaders in `detail` are rendered hierarchically so a downstream LLM can reconstruct slide layout:
-
-```
-## 4:1 proportion
-
-### How to build layout:
-1. ...
-2. ...
-
-## 6:1 proportion
-
-### How to build layout:
-1. ...
-2. ...
-```
+Text and table extraction are geometric (pdfminer + pdfplumber) — the LLM only interprets typography + coordinates for hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
 
 ## Setup
 
@@ -47,16 +71,15 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-All secrets live in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`. This project reads from two existing secrets:
+The OpenAI key lives in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`:
 
-| secret name | required keys                                                                                          |
-| ----------- | ------------------------------------------------------------------------------------------------------ |
-| `MySQL`     | `RDS_HOSTNAME`, `RDS_USERNAME_TESTDB`, `RDS_PASSWORD_TESTDB`, `RDS_DB_NAME`, `RDS_PORT` (optional; 3306) |
-| `LLMKeys`   | `OPENAI_API_KEY`, `OPENAI_MODEL` (optional; defaults to `gpt-4o`)                                       |
+| secret name | required keys                                              |
+| ----------- | ---------------------------------------------------------- |
+| `LLMKeys`   | `OPENAI_API_KEY`, `OPENAI_MODEL` (optional; default `gpt-4o`) |
 
-Override the secret names with the `MYSQL_SECRET_NAME` / `LLM_SECRET_NAME` env vars if needed. See `secrets.example.json` for the expected shape.
+Override the secret name with `LLM_SECRET_NAME` if needed. See `secrets.example.json` for the expected shape.
 
-AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile. `shared/settings.py` reads these secrets via `shared/aws_secrets.get_secret()` and returns a frozen `Settings` dataclass.
+AWS credentials are picked up from the standard boto3 chain (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, IAM role, `~/.aws/credentials`). Region comes from `AWS_REGION` or your profile.
 
 ## Run against the Galaxy Miracle guideline
 
@@ -77,13 +100,13 @@ python -m src.extract ^
 
 | flag           | default          | notes                                                                                     |
 | -------------- | ---------------- | ----------------------------------------------------------------------------------------- |
-| `--output-dir` | `output/images`  | Rendered slide PNGs and per-slide assets folders land here.                               |
-| `--codename`   | `""`            | Fallback for the `codename` column when not visible on a slide.                           |
-| `--product`    | `""`            | Fallback for the `product` column when not visible on a slide.                            |
-| `--dpi`        | `150`            | Render DPI for slide PNGs.                                                                |
+| `--output-dir` | `output/images`  | Per-slide screenshots and `slides.jsonl` land here.                                       |
+| `--codename`   | `""`             | Fallback for the `codename` field when not visible on a slide.                            |
+| `--product`    | `""`             | Fallback for the `product` field when not visible on a slide.                             |
+| `--dpi`        | `150`            | Render DPI for the per-slide screenshots.                                                 |
 | `--limit`      | `0` (all)        | Only process the first N slides. Ignored if `--pages` is set.                             |
-| `--pages`      | `""` (all)      | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
-| `--dry-run`    | off              | Print extracted rows as JSONL to stdout instead of writing to MySQL.                      |
+| `--pages`      | `""` (all)       | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
+| `--dry-run`    | off              | Print records to stdout instead of writing `slides.jsonl`.                                |
 
 ### Try a few slides first
 
@@ -91,36 +114,29 @@ python -m src.extract ^
 python -m src.extract --pdf "...pdf.zip" --pages 10-15 --dry-run
 ```
 
-`--dry-run` prints one JSON object per slide to stdout instead of touching MySQL — useful for eyeballing extraction quality before running the whole deck.
-
 ## Output layout
 
 ```
 output/images/<deck-stem>/
-  slide_001.png                 # full-page render (source for crops)
-  slide_001/                    # per-slide assets folder — image_path in the DB
-    img_01__<label>.png         # cropped visual regions, one per image on the slide
-    img_02__<label>.png
-    ...
+  slides.jsonl        # one JSON record per slide
+  slide_001.png       # full-slide screenshot referenced by that record's slide_image_path
   slide_002.png
-  slide_002/
-    ...
+  ...
 ```
 
-Each `img_NN__<label>.png` is named after the header/title text next to the visual on the slide. When a visual is marked only by a numbered gray-circle badge (common in Format tables), the badge digit becomes the label (`img_01__1.png`, `img_02__2.png`, …), so files line up 1-to-1 with the `Format N: …` rows in `detail`.
+The JSON records store `slide_image_path` as a basename only, so the screenshots can be moved to any folder — as long as your reader knows where they live, references stay valid.
 
 ## Layout
 
 ```
 src/
-  extract.py         # CLI entry point
-  pdf_utils.py       # render_pdf_pages, crop helpers
-  llm.py             # OpenAI vision extraction
-  db.py              # MySQL writer
+  extract.py         # CLI entry point; builds slide records and writes slides.jsonl
+  pdf_layout.py      # pdfminer.six text/figures + pdfplumber tables per page
+  pdf_utils.py       # page rendering (pypdfium2) + zip input handling
+  llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass
-schema.sql           # jihwi.brand_guidelines DDL
 secrets.example.json # template for the AWS Secrets Manager secret payload
 requirements.txt
 ```

@@ -7,16 +7,11 @@ from openai import OpenAI
 
 from shared.settings import get_settings
 
-from .db import connect, ensure_table, insert_row
-from .llm import extract_slide
-from .pdf_utils import (
-    crop_bbox_and_save,
-    extract_page_images_clustered,
-    render_pdf_pages,
-    resolve_pdf_input,
-)
+from .llm import build_payload, extract_slide
+from .pdf_layout import Table, TextLine, extract_page_layout
+from .pdf_utils import page_count, render_page, resolve_pdf_input
 
-FIELDS = ("product", "codename", "section", "sub_section", "detail", "model")
+SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
 
 
 def _slug(text: str, max_len: int = 60) -> str:
@@ -27,57 +22,102 @@ def _slug(text: str, max_len: int = 60) -> str:
     return text[:max_len].strip("_-")
 
 
-def _render_subheader(sh: dict, depth: int = 2) -> str:
-    """Render one subheader (and its nested children) as a markdown-ish block.
-
-    depth=2 -> "## title", depth=3 -> "### title", and so on. Nested children get
-    depth+1 so downstream readers can rebuild the slide's section hierarchy.
-    """
-    title = str(sh.get("title", "")).strip()
-    sh_detail = str(sh.get("detail", "")).strip()
-    sh_tables = _format_tables(sh.get("tables") or [])
-    children = sh.get("children") or []
-
-    block: list[str] = []
-    if title:
-        prefix = "#" * max(2, min(depth, 6))
-        block.append(f"{prefix} {title}")
-    if sh_detail:
-        block.append(sh_detail)
-    if sh_tables:
-        block.append("\n".join(sh_tables))
-    for child in children:
-        child_block = _render_subheader(child, depth=depth + 1)
-        if child_block:
-            block.append(child_block)
-    return "\n\n".join(block)
-
-
-def _format_tables(tables: list[dict]) -> list[str]:
-    """Render each table as its actual "col1 | col2 | ..." header row plus cell rows.
-    Multi-line cells are collapsed to " / " so each row stays on one line."""
+def _render_table(t: dict) -> str:
+    """Render one table as 'title\\ncol1 | col2 | ...\\ncell11 | cell12 | ...' — multi-line cells joined with ' / '."""
     def cell(v: object) -> str:
         parts = [p.strip() for p in str(v).splitlines() if p.strip()]
         return " / ".join(parts)
 
-    out: list[str] = []
-    for i, t in enumerate(tables or []):
-        if not isinstance(t, dict):
-            continue
-        if i > 0:
-            out.append("")
-        title = str(t.get("title", "")).strip()
-        if title:
-            out.append(title)
-        columns = [str(c).strip() for c in (t.get("columns") or [])]
-        if columns:
-            out.append(" | ".join(columns))
-        for row in t.get("rows") or []:
-            cells = [cell(c) for c in row]
-            if columns and len(cells) < len(columns):
-                cells += [""] * (len(columns) - len(cells))
-            out.append(" | ".join(cells))
-    return out
+    lines: list[str] = []
+    title = str(t.get("title", "") or "").strip()
+    if title:
+        lines.append(title)
+    columns = [str(c).strip() for c in (t.get("columns") or [])]
+    if columns:
+        lines.append(" | ".join(columns))
+    for row in t.get("rows") or []:
+        cells = [cell(c) for c in row]
+        if columns and len(cells) < len(columns):
+            cells += [""] * (len(columns) - len(cells))
+        lines.append(" | ".join(cells))
+    return "\n".join(lines)
+
+
+def _is_valid_subheader_title(title: str) -> bool:
+    """Enforce the prompt's (α) rule: <=10 words, no sentence-terminal punctuation.
+
+    A trailing colon is fine ("How to build layout:" is a real subheader).
+    A trailing period/question/exclamation mark means it's a sentence, not a label.
+    """
+    t = title.rstrip()
+    if not t:
+        return False
+    if t[-1] in ".?!":
+        return False
+    if len(t.split()) > 10:
+        return False
+    return True
+
+
+def _block_from_subheader(sh: dict) -> list[dict]:
+    """Turn one LLM subheader entry into a LIST of detail blocks (usually 1).
+
+    - A subheader whose title fails validation (too long, or ends in a period)
+      is demoted: the title is prepended to the body as prose, children hoist
+      as sibling blocks in the parent's list. That way misclassified sentences
+      keep their text and their real children.
+    - A subheader with only a title collapses to a plain body block.
+    - LLM no longer emits `tables`; any such field is ignored.
+    """
+    if not isinstance(sh, dict):
+        return []
+    title = str(sh.get("title", "") or "").strip()
+    body = str(sh.get("detail", "") or "").strip()
+
+    child_blocks: list[dict] = []
+    for c in sh.get("children") or []:
+        child_blocks.extend(_block_from_subheader(c))
+
+    if title and not _is_valid_subheader_title(title):
+        merged = f"{title} {body}".strip() if body else title
+        demoted = [{"body": merged}] if merged else []
+        return demoted + child_blocks
+
+    if title and not body and not child_blocks:
+        return [{"body": title}]
+
+    block: dict = {}
+    if title:
+        block["subheader"] = title
+    if body:
+        block["body"] = body
+    if child_blocks:
+        block["children"] = child_blocks
+    return [block] if block else []
+
+
+def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
+    """Return the slide's text hierarchy as a list of blocks in reading order.
+
+    Tables come exclusively from pdfplumber. The LLM no longer emits `tables`,
+    so grid-aligned image labels or short captions become subheaders instead of
+    being packed into a fake table.
+    """
+    blocks: list[dict] = []
+
+    slide_body = str(extracted.get("detail", "") or "").strip()
+    if slide_body:
+        blocks.append({"body": slide_body})
+
+    for t in pre_extracted_tables:
+        rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
+        if rendered:
+            blocks.append({"table": rendered})
+
+    for sh in extracted.get("subheaders") or []:
+        blocks.extend(_block_from_subheader(sh))
+
+    return blocks
 
 
 def parse_pages(spec: str) -> set[int]:
@@ -98,67 +138,39 @@ def parse_pages(spec: str) -> set[int]:
     return result
 
 
-def build_row(extracted: dict, slide_png: Path, defaults: dict, pdf_path: Path, slide_dpi: int = 150) -> dict:
-    row = {f: str(extracted.get(f, "") or "").strip() for f in FIELDS}
-    for k, v in defaults.items():
-        if not row.get(k) and v:
-            row[k] = v
-    row["page"] = int(slide_png.stem.rsplit("_", 1)[-1])
+def build_slide_record(
+    extracted: dict,
+    page_num: int,
+    slide_image_name: str,
+    defaults: dict,
+    doc_id: str,
+    pre_extracted_tables: list[Table] = (),
+) -> dict:
+    fields: dict = {}
+    for f in SLIDE_FIELDS:
+        value = str(extracted.get(f, "") or "").strip()
+        if not value and defaults.get(f):
+            value = defaults[f]
+        if value:
+            fields[f] = value
 
-    # Image extraction: the LLM returns one entry per distinct visual region
-    # on the slide with a label and a generous bbox_pct. We crop the rendered
-    # slide to each bbox (with a large pad on top of the LLM's own margin) and
-    # save with a header-slugged filename. Native pypdfium2 image extraction
-    # doesn't work for these decks because most "images" are vector-drawn
-    # (paths and shapes), not embedded rasters.
-    page_num = int(slide_png.stem.rsplit("_", 1)[-1])
-    assets_dir = slide_png.parent / slide_png.stem
-    assets_dir.mkdir(parents=True, exist_ok=True)
+    detail = _compose_detail(extracted, pre_extracted_tables)
 
-    llm_images = extracted.get("images") or []
-    saved_names: list[str] = []
-    for idx, entry in enumerate(llm_images, start=1):
-        if not isinstance(entry, dict):
-            continue
-        bbox = entry.get("bbox_pct") or [0.0, 0.0, 1.0, 1.0]
-        label = str(entry.get("label") or "").strip()
-        label_slug = _slug(label)
-        filename = f"img_{idx:02d}__{label_slug}.png" if label_slug else f"img_{idx:02d}.png"
-        out = assets_dir / filename
-        _, cropped = crop_bbox_and_save(slide_png, bbox, out, pad_pct=0.10)
-        if cropped:
-            saved_names.append(out.name)
-        else:
-            print(f"  ! image {idx}: bad bbox {bbox!r}, skipping")
-
-    if saved_names:
-        print(f"  [images] {len(saved_names)} LLM-directed crop(s): {', '.join(saved_names)}")
-    else:
-        (assets_dir / "slide.png").write_bytes(slide_png.read_bytes())
-        print("  [images] no image regions returned; saved full slide.png as fallback")
-
-    parts: list[str] = []
-    slide_detail = row.get("detail", "").strip()
-    if slide_detail:
-        parts.append(slide_detail)
-
-    slide_table_lines = _format_tables(extracted.get("tables") or [])
-    if slide_table_lines:
-        parts.append("\n".join(slide_table_lines))
-
-    for sh in extracted.get("subheaders") or []:
-        rendered = _render_subheader(sh, depth=2)
-        if rendered:
-            parts.append(rendered)
-
-    row["detail"] = "\n\n".join(parts)
-    row["image_path"] = str(assets_dir.resolve())
-    return row
+    record: dict = {
+        "doc_id": doc_id,
+        "slide_num": page_num,
+        "slide_id": f"{doc_id}#{page_num:03d}",
+    }
+    record.update(fields)
+    if detail:
+        record["detail"] = detail
+    record["slide_image_path"] = slide_image_name
+    return record
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Convert a campaign visual guideline PDF into rows in jihwi.brand_guidelines.",
+        description="Convert a campaign visual guideline PDF into per-slide JSON records for LLM retrieval.",
     )
     p.add_argument(
         "--pdf",
@@ -170,11 +182,11 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=Path("output/images"),
-        help="Directory that will receive rendered slide PNGs (a per-deck subfolder is created).",
+        help="Directory that will receive per-slide screenshots and the per-deck slides.jsonl.",
     )
     p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
-    p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide PNGs.")
+    p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
     p.add_argument(
         "--pages",
@@ -184,9 +196,247 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print extracted rows as JSONL to stdout instead of writing to MySQL.",
+        help="Print records to stdout instead of writing slides.jsonl.",
     )
     return p.parse_args()
+
+
+def _resolve_page_nums(pdf_path: Path, pages: set[int] | None, limit: int) -> list[int]:
+    total = page_count(pdf_path)
+    if pages:
+        return sorted(p for p in pages if 1 <= p <= total)
+    nums = list(range(1, total + 1))
+    return nums[:limit] if limit else nums
+
+
+def _backfill_sections(records: list[dict]) -> None:
+    """Slides without an explicit `section` inherit the last non-empty one seen.
+
+    Section indicators sit in the top-left corner of nearly every slide in a
+    deck but the LLM sometimes misses them. Sections rarely change mid-deck,
+    so carrying the last seen value forward fills the gaps correctly.
+    """
+    last = ""
+    for r in records:
+        current = r.get("section", "").strip()
+        if current:
+            last = current
+        elif last:
+            r["section"] = last
+
+
+def _normalize_for_match(s: str) -> str:
+    return " ".join(str(s).lower().split())
+
+
+def _build_source_haystack(text_lines: list[TextLine]) -> str:
+    """Normalized concatenation of every pdfminer text_line — the source-of-truth
+    corpus for grounding checks."""
+    return _normalize_for_match(" ".join(tl.text for tl in text_lines))
+
+
+def _is_grounded(candidate: str, haystack: str, min_overlap: float = 0.6) -> bool:
+    """True if enough of `candidate`'s meaningful words appear in the source.
+
+    Anything with fewer than 3 meaningful words (3+ chars each) skips the check —
+    short strings like "Galaxy S26" are too short to verify by overlap and are
+    unlikely to be hallucinated anyway. Trivial short words (a, the, of, ...)
+    don't count toward the overlap denominator.
+    """
+    words = [w for w in re.findall(r"\w+", (candidate or "").lower()) if len(w) >= 3]
+    if len(words) < 3:
+        return True
+    hits = sum(1 for w in words if w in haystack)
+    return hits / len(words) >= min_overlap
+
+
+def _sanitize_subheader(sh: dict, haystack: str) -> dict | None:
+    if not isinstance(sh, dict):
+        return None
+    title = str(sh.get("title", "") or "").strip()
+    detail = str(sh.get("detail", "") or "").strip()
+    if title and not _is_grounded(title, haystack):
+        print(f"  ! dropped ungrounded subheader title: {title!r}")
+        title = ""
+    if detail and not _is_grounded(detail, haystack):
+        print(f"  ! dropped ungrounded subheader body ({len(detail)} chars)")
+        detail = ""
+    children = [
+        c for c in (_sanitize_subheader(x, haystack) for x in (sh.get("children") or [])) if c
+    ]
+    if not (title or detail or children):
+        return None
+    out: dict = {}
+    if title:
+        out["title"] = title
+    if detail:
+        out["detail"] = detail
+    if children:
+        out["children"] = children
+    return out
+
+
+def _sanitize_llm_output(extracted: dict, haystack: str) -> dict:
+    """Drop any LLM-emitted string whose words aren't grounded in the pdfminer source.
+
+    Slide-level fields fall back to empty (and then to CLI defaults where
+    applicable). Subheader titles/bodies are individually cleared if
+    ungrounded; empty subheaders are removed.
+    """
+    out = dict(extracted)
+    for k in ("product", "codename", "sub_section", "model", "section"):
+        v = str(out.get(k, "") or "").strip()
+        if v and not _is_grounded(v, haystack):
+            print(f"  ! dropped ungrounded {k}: {v!r}")
+            out[k] = ""
+
+    detail = str(out.get("detail", "") or "").strip()
+    if detail and not _is_grounded(detail, haystack):
+        print(f"  ! dropped ungrounded slide-level detail ({len(detail)} chars)")
+        detail = ""
+    out["detail"] = detail
+
+    out["subheaders"] = [
+        sh for sh in (_sanitize_subheader(s, haystack) for s in (out.get("subheaders") or [])) if sh
+    ]
+    return out
+
+
+def _collect_block_text(block: dict, parts: list[str]) -> None:
+    if not isinstance(block, dict):
+        return
+    for k in ("subheader", "body", "table"):
+        v = block.get(k)
+        if v:
+            parts.append(str(v))
+    for child in block.get("children") or []:
+        _collect_block_text(child, parts)
+
+
+def _collect_output_text(record: dict) -> str:
+    """Concatenate every string this record emits, normalized for substring matching."""
+    parts: list[str] = []
+    for k in SLIDE_FIELDS:
+        v = record.get(k)
+        if v:
+            parts.append(str(v))
+    for block in record.get("detail") or []:
+        _collect_block_text(block, parts)
+    return _normalize_for_match(" ".join(parts))
+
+
+def _is_page_chrome_bbox(bbox_pct: tuple[float, float, float, float]) -> bool:
+    """Skip page-chrome text lines so the coverage check doesn't re-add them.
+
+    Matches the PAGE CHROME rule in the prompt: top-right stamps and anything
+    hugging the bottom edge. The top-left section indicator is deliberately
+    NOT excluded — it should have been captured as `section`, and if it wasn't,
+    _backfill_sections handles it before we get here.
+    """
+    x0, y0, x1, y1 = bbox_pct
+    if y1 < 0.05 and x0 > 0.7:
+        return True
+    if y0 > 0.94:
+        return True
+    return False
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Coarse sentence split — good enough for dedupe. Keeps bullet fragments intact."""
+    return [p.strip() for p in _SENTENCE_SPLIT.split(text.strip()) if p.strip()]
+
+
+def _dedupe_block(block: dict, seen: set[str]) -> None:
+    """Drop already-seen sentences from body and already-seen strings from table.
+
+    Body dedupe is SENTENCE-level: the coverage-check often appends a full
+    pdfminer paragraph when the LLM captured only its first sentence, so
+    exact-body matches miss the duplication. Split on sentence terminators
+    and drop any sentence whose normalized form appeared earlier.
+    """
+    if not isinstance(block, dict):
+        return
+    body = block.get("body")
+    if body:
+        kept: list[str] = []
+        for sent in _split_sentences(body):
+            norm = _normalize_for_match(sent)
+            if len(norm) < 5:
+                # too short to dedupe meaningfully; keep as-is without adding to seen
+                kept.append(sent)
+                continue
+            if norm in seen:
+                continue
+            seen.add(norm)
+            kept.append(sent)
+        if kept:
+            block["body"] = " ".join(kept)
+        else:
+            del block["body"]
+    table = block.get("table")
+    if table:
+        norm = _normalize_for_match(table)
+        if norm in seen:
+            del block["table"]
+        else:
+            seen.add(norm)
+    for child in block.get("children") or []:
+        _dedupe_block(child, seen)
+
+
+def _prune_empty_blocks(blocks: list[dict]) -> list[dict]:
+    """Recursively remove blocks left empty after dedupe."""
+    out: list[dict] = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        children = _prune_empty_blocks(b.get("children") or [])
+        if children:
+            b["children"] = children
+        else:
+            b.pop("children", None)
+        if b.get("subheader") or b.get("body") or b.get("table") or b.get("children"):
+            out.append(b)
+    return out
+
+
+def _dedupe_detail(record: dict) -> None:
+    """Ensure no body/table content appears twice in the record's detail tree."""
+    seen: set[str] = set()
+    for block in record.get("detail") or []:
+        _dedupe_block(block, seen)
+    record["detail"] = _prune_empty_blocks(record.get("detail") or [])
+    if not record["detail"]:
+        del record["detail"]
+
+
+def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
+    """Append any pdfminer text_line whose content is missing from the record's output.
+
+    Belt-and-suspenders for the prompt's COMPLETENESS RULE. Uses a case- and
+    whitespace-insensitive substring check: if a text_line's content doesn't
+    appear anywhere the LLM emitted, drop it verbatim into a fallback body
+    block at the end of `detail`.
+    """
+    output = _collect_output_text(record)
+    missing: list[str] = []
+    for tl in text_lines:
+        if _is_page_chrome_bbox(tl.bbox_pct):
+            continue
+        norm = _normalize_for_match(tl.text)
+        if not norm or len(norm) < 3:
+            continue
+        if norm in output:
+            continue
+        missing.append(tl.text.strip())
+    if not missing:
+        return
+    if "detail" not in record:
+        record["detail"] = []
+    record["detail"].append({"body": "\n".join(missing)})
 
 
 def main() -> None:
@@ -196,45 +446,65 @@ def main() -> None:
         raise SystemExit(f"Input not found: {args.pdf}")
 
     pdf_path = resolve_pdf_input(args.pdf)
-
     settings = get_settings()
 
     pages = parse_pages(args.pages) if args.pages else None
+    page_nums = _resolve_page_nums(pdf_path, pages, args.limit)
 
     per_deck_dir = args.output_dir / pdf_path.stem
-    image_paths = render_pdf_pages(pdf_path, per_deck_dir, dpi=args.dpi, pages=pages)
-    if args.limit and not pages:
-        image_paths = image_paths[: args.limit]
+    per_deck_dir.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"codename": args.codename, "product": args.product}
+    doc_id = _slug(pdf_path.stem)
 
-    rows: list[dict] = []
-    for i, img in enumerate(image_paths, start=1):
-        print(f"[extract] slide {i}/{len(image_paths)}: {img.name}")
+    records: list[dict] = []
+    text_lines_by_page: dict[int, list[TextLine]] = {}
+    for i, page_num in enumerate(page_nums, start=1):
+        print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
-            data = extract_slide(client, settings.openai_model, img)
+            layout = extract_page_layout(pdf_path, page_num)
+            payload = build_payload(layout, page_num)
+            data = extract_slide(client, settings.openai_model, payload)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
-        rows.append(build_row(data, img, defaults, pdf_path, slide_dpi=args.dpi))
+
+        data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
+
+        slide_image_name = f"slide_{page_num:03d}.png"
+        rendered = render_page(pdf_path, page_num, dpi=args.dpi)
+        rendered.save(per_deck_dir / slide_image_name, format="PNG")
+
+        records.append(
+            build_slide_record(
+                data,
+                page_num=page_num,
+                slide_image_name=slide_image_name,
+                defaults=defaults,
+                doc_id=doc_id,
+                pre_extracted_tables=layout.tables,
+            )
+        )
+        text_lines_by_page[page_num] = layout.text_lines
+
+    _backfill_sections(records)
+    for record in records:
+        tls = text_lines_by_page.get(record.get("slide_num", -1), [])
+        _append_missing_text(record, tls)
+        _dedupe_detail(record)
 
     if args.dry_run:
-        for r in rows:
+        for r in records:
             print(json.dumps(r, ensure_ascii=False))
         return
 
-    with connect(
-        host=settings.mysql_host,
-        port=settings.mysql_port,
-        user=settings.mysql_user,
-        password=settings.mysql_password,
-        database=settings.mysql_database,
-    ) as conn:
-        ensure_table(conn)
-        for r in rows:
-            insert_row(conn, r)
-    print(f"[db] inserted {len(rows)} rows into jihwi.brand_guidelines")
+    out_path = per_deck_dir / "slides.jsonl"
+    with out_path.open("w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False))
+            f.write("\n")
+    print(f"[jsonl] wrote {len(records)} slide record(s) to {out_path}")
 
 
 if __name__ == "__main__":
