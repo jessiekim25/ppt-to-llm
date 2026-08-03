@@ -1,6 +1,6 @@
 # ppt-to-llm
 
-Convert a Samsung campaign visual identity PDF (or PPT export) into one structured **JSON record per slide**, written as a per-deck `slides.jsonl` file alongside one PNG screenshot per slide. The JSONL is designed to be fed straight to an LLM (or indexed for retrieval) without a database in the middle — layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
+Convert Samsung campaign visual identity PDFs (or PPT exports) into structured **JSON records per slide**, one per-deck `slides.jsonl` for display, one per-deck `chunks.jsonl` for retrieval, and a combined `corpus/chunks.jsonl` that concatenates every deck for a downstream RAG agent. Layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
 
 ## Slide record schema
 
@@ -51,6 +51,56 @@ Notes:
   Blocks omit fields they don't have — a slide-level paragraph is just `{"body": "..."}`, a table is `{"table": "..."}`, a heading that only owns a nested child is `{"subheader": "...", "children": [...]}`.
 - **`slide_image_path`** is a basename (e.g. `slide_042.png`) so the images can be moved to any folder without breaking references.
 
+## Retrieval chunks (`chunks.jsonl`)
+
+For each deck we also emit a retrieval-shaped file alongside `slides.jsonl`. One line per slide, flat scalars only, ready for a downstream RAG agent to embed and index:
+
+```json
+{
+  "slide_id":   "2026_Galaxy_Miracle_VIS_Guidelines_v1_6#042",
+  "doc_id":     "2026_Galaxy_Miracle_VIS_Guidelines_v1_6",
+  "slide_num":  42,
+  "image_path": "decks/2026_Galaxy_Miracle_VIS_Guidelines_v1_6/slide_042.png",
+  "embed_text": "Galaxy S26 Miracle — 01 Brand Basics / Hero Key Visual. Product Logo: Height must not exceed 90% of lettermark. Table: Sizing. Context — Print, Size — 90%. Context — OOH, Size — 80%.",
+  "metadata": {
+    "product": "Galaxy S26",
+    "codename": "Miracle",
+    "model": "Galaxy S26 Ultra",
+    "section": "01 Brand Basics",
+    "sub_section": "Hero Key Visual",
+    "has_table": true,
+    "has_subheaders": true,
+    "text_len": 189,
+    "is_visual_only": false
+  }
+}
+```
+
+- **`embed_text`** — deterministic flatten of the slide (product/codename header + subheader-prefixed body sentences + tables rendered as prose). Feed this straight to any embedding model.
+- **`metadata`** — flat scalars for hybrid-search filters. Nested structure omitted so any vector DB (pgvector, Qdrant, LanceDB, Pinecone) can filter on them.
+- **`image_path`** — path relative to the `output/` root, so the combined corpus file is self-contained.
+- **`is_visual_only`** — flagged when `embed_text` is nearly empty; downstream can decide whether to caption these separately (this repo doesn't call an LLM for that).
+
+## Corpus (`output/corpus/chunks.jsonl`)
+
+After extract, all per-deck `chunks.jsonl` files are concatenated into one combined file for downstream ingestion:
+
+```
+output/
+  decks/
+    <doc_id>/
+      slides.jsonl        # display shape
+      chunks.jsonl        # retrieval shape (authoritative per deck)
+      slide_NNN.png
+  corpus/
+    chunks.jsonl          # concatenation of every deck's chunks.jsonl
+    manifest.json         # {doc_id: {chunk_count, sha256, built_at, source}}
+```
+
+Per-deck `chunks.jsonl` stays authoritative. `corpus/chunks.jsonl` is a derived artifact — safe to delete and rebuild anytime. `slide_id` is globally unique (`{doc_id}#{slide_num:03d}`), so concatenation has no collisions and downstream can upsert incrementally.
+
+Extract auto-rebuilds the corpus after each run — so if you extract deck A today and deck B tomorrow, `corpus/chunks.jsonl` includes both after tomorrow's run without any extra step. Skip the rebuild with `--no-corpus` if you want to batch several extractions before consolidating.
+
 ## How it works
 
 1. For each slide:
@@ -91,22 +141,40 @@ python -m src.extract ^
   --pdf "C:\Users\yebin.kim\2026 Galaxy Miracle VIS Guidelines_v1.6_260116_compressed.pdf.zip" ^
   --codename "Miracle" ^
   --product "Galaxy S26" ^
-  --output-dir "C:\Users\yebin.kim\brand_guideline_images"
+  --output-dir "C:\Users\yebin.kim\brand_guideline_output\decks"
+```
+
+Extract also builds this deck's `chunks.jsonl` and refreshes the combined `corpus/chunks.jsonl`. Add `--no-chunk` or `--no-corpus` to skip either step (e.g. when batch-extracting several PDFs before consolidating).
+
+### Re-chunk or rebuild the corpus without re-extracting
+
+```bash
+# Re-flatten one deck's slides.jsonl into chunks.jsonl.
+python -m src.chunk --deck output/decks/<doc_id>
+
+# Re-flatten every deck under a root.
+python -m src.chunk --all --decks-dir output/decks
+
+# Rebuild the combined corpus file from all deck chunks.jsonl.
+python -m src.corpus --decks-dir output/decks --out output/corpus/chunks.jsonl
 ```
 
 `--codename` and `--product` are optional fallbacks used only when the model can't read them from the slide itself.
 
 ### Options
 
-| flag           | default          | notes                                                                                     |
-| -------------- | ---------------- | ----------------------------------------------------------------------------------------- |
-| `--output-dir` | `output/images`  | Per-slide screenshots and `slides.jsonl` land here.                                       |
-| `--codename`   | `""`             | Fallback for the `codename` field when not visible on a slide.                            |
-| `--product`    | `""`             | Fallback for the `product` field when not visible on a slide.                             |
-| `--dpi`        | `150`            | Render DPI for the per-slide screenshots.                                                 |
-| `--limit`      | `0` (all)        | Only process the first N slides. Ignored if `--pages` is set.                             |
-| `--pages`      | `""` (all)       | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
-| `--dry-run`    | off              | Print records to stdout instead of writing `slides.jsonl`.                                |
+| flag           | default                            | notes                                                                                     |
+| -------------- | ---------------------------------- | ----------------------------------------------------------------------------------------- |
+| `--output-dir` | `output/decks`                     | Root directory for per-deck folders (each holds `slides.jsonl`, `chunks.jsonl`, PNGs).    |
+| `--corpus-out` | `<output-dir>/../corpus/chunks.jsonl` | Path to the combined corpus file rebuilt after extract.                                  |
+| `--no-chunk`   | off                                | Skip building this deck's `chunks.jsonl` after extraction.                                |
+| `--no-corpus`  | off                                | Skip rebuilding the combined corpus file after extraction.                                |
+| `--codename`   | `""`                               | Fallback for the `codename` field when not visible on a slide.                            |
+| `--product`    | `""`                               | Fallback for the `product` field when not visible on a slide.                             |
+| `--dpi`        | `150`                              | Render DPI for the per-slide screenshots.                                                 |
+| `--limit`      | `0` (all)                          | Only process the first N slides. Ignored if `--pages` is set.                             |
+| `--pages`      | `""` (all)                         | Specific slide numbers, e.g. `42` or `10-15,42,100-105`.                                  |
+| `--dry-run`    | off                                | Print records to stdout instead of writing files (skips chunk + corpus).                  |
 
 ### Try a few slides first
 
@@ -117,20 +185,28 @@ python -m src.extract --pdf "...pdf.zip" --pages 10-15 --dry-run
 ## Output layout
 
 ```
-output/images/<deck-stem>/
-  slides.jsonl        # one JSON record per slide
-  slide_001.png       # full-slide screenshot referenced by that record's slide_image_path
-  slide_002.png
-  ...
+output/
+  decks/
+    <doc_id>/
+      slides.jsonl      # one JSON record per slide (display shape)
+      chunks.jsonl      # one retrieval row per slide (embed_text + metadata)
+      slide_001.png     # full-slide screenshot referenced by slide_image_path
+      slide_002.png
+      ...
+  corpus/
+    chunks.jsonl        # concatenation of every deck's chunks.jsonl
+    manifest.json       # per-deck chunk_count, sha256, built_at
 ```
 
-The JSON records store `slide_image_path` as a basename only, so the screenshots can be moved to any folder — as long as your reader knows where they live, references stay valid.
+`slides.jsonl` stores `slide_image_path` as a basename (resolves inside the deck folder). `chunks.jsonl` stores `image_path` as `decks/<doc_id>/<basename>` so the corpus file is self-contained relative to the `output/` root.
 
 ## Layout
 
 ```
 src/
-  extract.py         # CLI entry point; builds slide records and writes slides.jsonl
+  extract.py         # CLI entry point; builds slide records, then chunks + corpus
+  chunk.py           # slides.jsonl -> chunks.jsonl (deterministic flatten)
+  corpus.py          # every deck's chunks.jsonl -> corpus/chunks.jsonl + manifest.json
   pdf_layout.py      # pdfminer.six text/figures + pdfplumber tables per page
   pdf_utils.py       # page rendering (pypdfium2) + zip input handling
   llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)

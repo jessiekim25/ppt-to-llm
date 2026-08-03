@@ -7,6 +7,8 @@ from openai import OpenAI
 
 from shared.settings import get_settings
 
+from .chunk import chunk_deck
+from .corpus import build_corpus
 from .llm import build_payload, extract_slide
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
@@ -181,8 +183,24 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output/images"),
-        help="Directory that will receive per-slide screenshots and the per-deck slides.jsonl.",
+        default=Path("output/decks"),
+        help="Root directory for per-deck folders (each holds slides.jsonl, chunks.jsonl, and screenshots).",
+    )
+    p.add_argument(
+        "--corpus-out",
+        type=Path,
+        default=None,
+        help="Path to the combined corpus file. Defaults to <output-dir>/../corpus/chunks.jsonl.",
+    )
+    p.add_argument(
+        "--no-chunk",
+        action="store_true",
+        help="Skip building this deck's chunks.jsonl after extraction.",
+    )
+    p.add_argument(
+        "--no-corpus",
+        action="store_true",
+        help="Skip rebuilding the combined corpus file after extraction.",
     )
     p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
@@ -505,6 +523,15 @@ def main() -> None:
             f.write(json.dumps(r, ensure_ascii=False))
             f.write("\n")
     print(f"[jsonl] wrote {len(records)} slide record(s) to {out_path}")
+
+    if args.no_chunk:
+        return
+    chunk_deck(per_deck_dir)
+
+    if args.no_corpus:
+        return
+    corpus_out = args.corpus_out or (args.output_dir.parent / "corpus" / "chunks.jsonl")
+    build_corpus(args.output_dir, corpus_out)
 
 
 if __name__ == "__main__":
