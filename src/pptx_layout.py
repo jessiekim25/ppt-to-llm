@@ -33,8 +33,54 @@ def _shape_bbox_pct(shape, slide_w: int, slide_h: int) -> tuple[float, float, fl
     return (x0, y0, x1, y1)
 
 
+_BOLD_FONT_KEYWORDS = ("bold", "black", "heavy", "extrabold", "semibold", "demibold")
+
+
+def _looks_bold_by_name(font_name: str) -> bool:
+    n = (font_name or "").lower()
+    return any(kw in n for kw in _BOLD_FONT_KEYWORDS)
+
+
+def _resolve_bold(flag, font_name: str, para_flag=None, para_font: str = "") -> bool:
+    """Best-effort bold resolution.
+
+    python-pptx returns run.font.bold as True/False/None where None means
+    "inherit from the placeholder/master". We can't fully resolve inherited
+    styles without walking the theme, but two cheap fallbacks catch most
+    real-world cases: (1) the paragraph's own font.bold, (2) the font name
+    itself often carries the weight ("Roboto Bold", "Arial-BoldMT",
+    "SamsungOneUI Semibold").
+    """
+    if flag is True:
+        return True
+    if flag is False:
+        return False
+    if para_flag is True:
+        return True
+    if _looks_bold_by_name(font_name):
+        return True
+    if _looks_bold_by_name(para_font):
+        return True
+    return False
+
+
 def _paragraph_style(para) -> tuple[float | None, str, bool]:
-    """Return (font_size_pt, font_name, is_bold) from the first non-empty run."""
+    """Return (font_size_pt, font_name, is_bold) from the first non-empty run.
+
+    Size falls back to paragraph-level default; bold combines run flag,
+    paragraph flag, and font-name inspection so slides that inherit weight
+    from the theme still get flagged bold (which is how most subheaders and
+    table column headers are styled).
+    """
+    para_font_name = para.font.name or ""
+    para_bold_flag = para.font.bold  # True / False / None
+    para_size = None
+    try:
+        if para.font.size is not None:
+            para_size = float(para.font.size.pt)
+    except Exception:
+        para_size = None
+
     for run in para.runs:
         if not (run.text or "").strip():
             continue
@@ -44,17 +90,13 @@ def _paragraph_style(para) -> tuple[float | None, str, bool]:
                 size = float(run.font.size.pt)
         except Exception:
             size = None
-        font = run.font.name or ""
-        bold = bool(run.font.bold)
+        if size is None:
+            size = para_size
+        font = run.font.name or para_font_name
+        bold = _resolve_bold(run.font.bold, font, para_bold_flag, para_font_name)
         return size, font, bold
-    # Fall back to paragraph-level defaults.
-    size = None
-    try:
-        if para.font.size is not None:
-            size = float(para.font.size.pt)
-    except Exception:
-        size = None
-    return size, (para.font.name or ""), bool(para.font.bold)
+
+    return para_size, para_font_name, _resolve_bold(para_bold_flag, para_font_name)
 
 
 def _text_frame_lines(

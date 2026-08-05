@@ -269,9 +269,16 @@ def _propagate_sections_from_intros(records: list[dict]) -> None:
     """PPTX section rule: each section starts with an intro slide whose sole
     purpose is naming a new section (e.g. a "Roadmap" or "March review" cover
     slide). Every subsequent slide belongs to that section until the next
-    intro slide. The LLM tags intro slides with `is_section_intro: true` and
-    puts the section title in `section`; content slides leave `section`
-    empty and inherit it here.
+    intro slide.
+
+    Content slides ALWAYS take their `section` from the last-seen intro,
+    overwriting whatever the LLM may have put there — the intro-driven
+    pattern is authoritative and any per-slide LLM guess (often derived
+    from a subtly-styled watermark or footer) is noise that would break
+    the pattern.
+
+    If a content slide precedes the first intro, its `section` is cleared
+    so downstream doesn't see a stray value.
     """
     current = ""
     for r in records:
@@ -281,8 +288,39 @@ def _propagate_sections_from_intros(records: list[dict]) -> None:
                 current = intro_section
         else:
             r.pop("is_section_intro", None)
-            if not r.get("section", "").strip() and current:
+            if current:
                 r["section"] = current
+            elif "section" in r:
+                del r["section"]
+
+
+_RECORD_KEY_ORDER = (
+    "slide_id",
+    "doc_id",
+    "product",
+    "section",
+    "sub_section",
+    "model",
+    "detail",
+    "slide_image_path",
+)
+
+
+def _reorder_record(record: dict) -> dict:
+    """Return a new dict with keys in the canonical output order.
+
+    Necessary because fields like `section` can be set (or overwritten) by
+    post-processing after `build_slide_record` returned, which puts them at
+    the END of the dict — dict insertion order is what the JSON writer emits.
+    """
+    ordered: dict = {}
+    for k in _RECORD_KEY_ORDER:
+        if k in record:
+            ordered[k] = record[k]
+    for k, v in record.items():
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
 
 
 def _normalize_for_match(s: str) -> str:
@@ -577,6 +615,8 @@ def main() -> None:
         tls = text_lines_by_slide.get(record["slide_id"], [])
         _append_missing_text(record, tls)
         _dedupe_detail(record)
+
+    records = [_reorder_record(r) for r in records]
 
     if args.dry_run:
         for r in records:

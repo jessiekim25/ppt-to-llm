@@ -174,21 +174,22 @@ PAGE CHROME — always drop:
 - Copyright / legal footers hugging the bottom edge.
 
 SECTION INTRO DETECTION — the primary difference from a guideline deck:
-This deck is divided into content sections. Each section starts with a "section intro" slide whose entire purpose is to introduce that section. A section intro slide has ALL of these traits:
-  1. Very sparse content — typically only 1-3 text lines total.
-  2. One dominant heading text that is much larger than any body text on other slides (this is the section title).
-  3. Optionally a short subtitle beside or under the dominant heading.
-  4. No columns, no tables, no paragraphs of body text, no lists.
+This deck is divided into content sections. Each section starts with a "section intro" slide whose entire purpose is to introduce that section. Use this checklist — a slide IS a section intro when ALL are true:
+  1. Very sparse content — usually 1-3 text lines total, at most 4.
+  2. No tables, no columns of parallel headings, no bullet lists, no descriptive paragraphs of body text.
+  3. One dominant heading text whose `size` is dramatically larger than every other text on the slide — typically ≥2x. This heading is short: 1-4 words is typical (e.g. "Roadmap", "March review", "Live tests", "Next steps", "Q&A"). It sits large in the slide's main visual area (not tucked in a corner).
+  4. At most ONE other short line (a subtitle or one-sentence description).
+  A regular content slide has multiple text lines of body content, subheaders, tables, or columns — even if it also has a big title. If any of (1)-(4) fail, it is NOT an intro.
 
 When the slide IS a section intro:
   - Set `is_section_intro: true`.
-  - Put the section title (the dominant large heading text, e.g. "Roadmap", "March review", "Live tests") in the `section` field.
-  - If a subtitle exists, put it in `sub_section`.
-  - Do NOT invent subheaders — this kind of slide's content is just the title/subtitle themselves.
+  - Put the dominant heading text (e.g. "Roadmap", "March review", "Live tests") in the `section` field VERBATIM.
+  - If a short subtitle exists, put it in `sub_section`.
+  - Leave `detail` as "" and `subheaders` as []. Do NOT invent subheaders — the intro slide's content IS the title/subtitle themselves.
 
 When the slide is NOT a section intro (regular content slide):
   - Set `is_section_intro: false`.
-  - Leave `section` as "" — the section for content slides is inherited from the most recent section intro slide during post-processing. Do NOT try to guess it.
+  - Set `section` to "" ALWAYS. The section for content slides is filled in by post-processing from the most recent intro slide. Any value you put here is discarded, so setting it wrong wastes the field — leave it empty.
   - Extract `sub_section` (the slide's main title) and everything else normally.
 
 MULTI-LINE TITLES: consecutive text lines near the top with the same (or very close) `size` and matching x0 are ONE title that wrapped. Concatenate with a single space.
@@ -215,9 +216,12 @@ Content fields:
 - subheaders: array describing every distinct heading + body pair on the slide, other than the main slide title itself.
   WHAT COUNTS AS A SUBHEADER — all three must hold:
     (α) At most 10 words, and does NOT end with a period. A trailing ":" is fine.
-    (β) A clear typographic distinction from the text that follows: strictly larger `size` OR `bold: true` when the body below is not bold.
+    (β) A clear typographic distinction from the text that follows. Either of these qualifies:
+        - strictly larger `size` than the text that follows, OR
+        - `bold: true` while the text that follows is not bold.
+      IMPORTANT: bold-vs-non-bold is the STRONGEST signal in this deck — most subheaders and even table column labels are set in bold with the body text below them in regular weight. Whenever you see a short bold line immediately followed by longer non-bold text that reads as its explanation, treat the bold line as a subheader by default. Do NOT swallow it into the body paragraph.
     (γ) At least one text line of descriptive body directly under/beside it.
-  If a candidate fails ANY of (α)/(β)/(γ), it is body text — merge it back into the surrounding paragraph in `detail`.
+  If a candidate fails ANY of (α)/(β)/(γ), it is body text — merge it back into the surrounding paragraph in `detail`. But don't discard weak-typography short lines just because you're unsure — err on the side of promoting a plausibly-bold short line to a subheader when the line after it looks like body copy.
 
   STRICT RULES:
     (a) EVERY qualifying heading is its OWN entry with its heading text in `title`.
