@@ -175,6 +175,22 @@ python -m src.extract ^
 
 The first run per deck spends a few seconds converting the pptx to a companion PDF via LibreOffice; that PDF is cached beside the pptx and skipped on subsequent runs (regenerated only if the source pptx is newer).
 
+**Picking one deck out of a multi-file .zip.** If the archive at `--pptx` holds several `.pptx` files, extract lists them and exits so you can pick one with `--pick <substring>` (case-insensitive filename match):
+
+```bash
+python -m src.extract --pptx path/to/many_decks.zip
+# [pptx] many_decks.zip contains 3 .pptx files; choose one with --pick
+#        .pptx files inside many_decks.zip:
+#          - roadmap_deck.pptx
+#          - march_review.pptx
+#          - live_tests.pptx
+
+python -m src.extract --pptx path/to/many_decks.zip --pick march
+# extracts march_review.pptx and processes only that deck
+```
+
+`--pick` is ignored when the zip has a single `.pptx` or when `--pptx` points at a bare `.pptx`.
+
 **Section behavior for pptx.** Section labels are not read from a top-left header (as they are in the guideline PDF). Instead, the extractor looks for "section-intro" slides — slides whose only content is a big title naming the next section (e.g. `Roadmap`, `March review`, `Live tests`). The intro slide's title becomes the `section` for that slide and for every following slide until the next intro slide.
 
 ### Re-chunk or rebuild the corpus without re-extracting

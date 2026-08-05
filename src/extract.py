@@ -195,7 +195,14 @@ def parse_args() -> argparse.Namespace:
     src.add_argument(
         "--pptx",
         type=Path,
-        help="Path to a .pptx, or to a .zip containing one (extracted automatically).",
+        help="Path to a .pptx, or to a .zip containing one or more (extracted automatically).",
+    )
+    p.add_argument(
+        "--pick",
+        default="",
+        help="With --pptx pointing at a multi-file .zip, substring of the .pptx filename to extract "
+        "(case-insensitive; must match exactly one). Ignored when the zip has a single .pptx or "
+        "when --pptx points at a bare .pptx.",
     )
     p.add_argument(
         "--output-dir",
@@ -503,7 +510,7 @@ def main() -> None:
     settings = get_settings()
 
     if is_pptx:
-        pptx_path = resolve_pptx_input(input_path)
+        pptx_path = resolve_pptx_input(input_path, pick=args.pick)
         source_stem = pptx_path.stem
         per_file_dir = args.output_dir / source_stem
         per_file_dir.mkdir(parents=True, exist_ok=True)

@@ -16,8 +16,15 @@ from PIL import Image
 from .pdf_utils import render_page as _render_pdf_page
 
 
-def resolve_pptx_input(pptx_or_zip: Path) -> Path:
-    """If given a .zip, extract the first .pptx inside next to the archive and return its path."""
+def resolve_pptx_input(pptx_or_zip: Path, pick: str = "") -> Path:
+    """If given a .zip, extract the requested .pptx inside next to the archive and return its path.
+
+    `pick` selects which .pptx to pull from a multi-file zip:
+      - "" (default): only allowed when the zip contains exactly one .pptx.
+        With multiple, prints the list and exits so the caller can retry with --pick.
+      - a substring: matches (case-insensitive) against the archive member's
+        basename. Must match exactly one file; otherwise prints candidates and exits.
+    """
     if pptx_or_zip.suffix.lower() != ".zip":
         return pptx_or_zip
     with zipfile.ZipFile(pptx_or_zip) as zf:
@@ -27,13 +34,34 @@ def resolve_pptx_input(pptx_or_zip: Path) -> Path:
         ]
         if not members:
             raise SystemExit(f"No .pptx found inside {pptx_or_zip}")
-        member = members[0]
+
+        if pick:
+            needle = pick.lower()
+            matches = [n for n in members if needle in Path(n).name.lower()]
+            if not matches:
+                _die_with_listing(pptx_or_zip, members, f"no .pptx in {pptx_or_zip.name} matches --pick {pick!r}")
+            if len(matches) > 1:
+                _die_with_listing(pptx_or_zip, matches, f"--pick {pick!r} matches {len(matches)} files; be more specific")
+            member = matches[0]
+        elif len(members) > 1:
+            _die_with_listing(pptx_or_zip, members, f"{pptx_or_zip.name} contains {len(members)} .pptx files; choose one with --pick")
+        else:
+            member = members[0]
+
         target = pptx_or_zip.parent / Path(member).name
         if not target.exists():
             print(f"[unzip] {pptx_or_zip.name} -> {target.name}")
             with zf.open(member) as src, open(target, "wb") as dst:
                 dst.write(src.read())
     return target
+
+
+def _die_with_listing(archive: Path, members: list[str], reason: str) -> None:
+    print(f"[pptx] {reason}", flush=True)
+    print(f"       .pptx files inside {archive.name}:")
+    for m in members:
+        print(f"         - {m}")
+    raise SystemExit(2)
 
 
 def _find_soffice() -> str:
