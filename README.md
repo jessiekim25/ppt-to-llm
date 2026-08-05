@@ -128,15 +128,19 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-**Extra dependency for `--pptx`**: [LibreOffice](https://www.libreoffice.org/) must be on `PATH` (`soffice` or `libreoffice`) so pptx slides can be rendered to PNG via a companion PDF.
+**Extra dependency for `--pptx`**: [LibreOffice](https://www.libreoffice.org/) so pptx slides can be rendered to PNG via a companion PDF.
 
 ```bash
 # macOS
 brew install --cask libreoffice
 # Debian/Ubuntu
 sudo apt-get install libreoffice
-# Windows: install LibreOffice and make sure soffice.exe is on PATH.
+# Windows: download the installer from https://www.libreoffice.org/download
+# The default install path (C:\Program Files\LibreOffice\program\soffice.exe)
+# is auto-detected; you don't need to add it to PATH.
 ```
+
+Only need the JSON output right now and don't want to install LibreOffice? Pass `--no-images` on the `--pptx` command to skip the render step — `slides.jsonl` and `chunks.jsonl` are still produced.
 
 The OpenAI key lives in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`:
 

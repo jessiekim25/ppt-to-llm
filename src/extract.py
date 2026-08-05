@@ -283,7 +283,8 @@ def build_slide_record(
     record.update(fields)
     if detail:
         record["detail"] = detail
-    record["slide_image_path"] = slide_image_name
+    if slide_image_name:
+        record["slide_image_path"] = slide_image_name
     return record
 
 
@@ -330,6 +331,12 @@ def parse_args() -> argparse.Namespace:
         "--no-corpus",
         action="store_true",
         help="Skip rebuilding the combined corpus file after extraction.",
+    )
+    p.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Skip rendering per-slide PNGs. Useful for --pptx runs on machines "
+        "without LibreOffice installed — you still get slides.jsonl/chunks.jsonl.",
     )
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
@@ -661,9 +668,10 @@ def main() -> None:
         source_stem = pptx_path.stem
         per_file_dir = args.output_dir / source_stem
         per_file_dir.mkdir(parents=True, exist_ok=True)
-        # Companion PDF lives beside the pptx, not inside output/. Rendered
-        # PNGs are the artifact; the intermediate PDF is a cache.
-        render_pdf_path = pptx_to_pdf(pptx_path, pptx_path.parent)
+        # Companion PDF is only needed for rendering per-slide PNGs. Skip the
+        # LibreOffice call entirely when --no-images is set so the pipeline
+        # runs on machines without LibreOffice.
+        render_pdf_path = None if args.no_images else pptx_to_pdf(pptx_path, pptx_path.parent)
         total_slides = pptx_slide_count(pptx_path)
         extract_layout = lambda n: extract_pptx_slide_layout(pptx_path, n)
         llm_kind = "pptx"
@@ -699,9 +707,12 @@ def main() -> None:
         is_section_intro = bool(data.get("is_section_intro", False)) if is_pptx else False
         data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
 
-        slide_image_name = f"slide_{page_num:03d}.png"
-        rendered = render_page(render_pdf_path, page_num, dpi=args.dpi)
-        rendered.save(per_file_dir / slide_image_name, format="PNG")
+        if args.no_images or render_pdf_path is None:
+            slide_image_name = ""  # signals build_slide_record to omit slide_image_path
+        else:
+            slide_image_name = f"slide_{page_num:03d}.png"
+            rendered = render_page(render_pdf_path, page_num, dpi=args.dpi)
+            rendered.save(per_file_dir / slide_image_name, format="PNG")
 
         record = build_slide_record(
             data,

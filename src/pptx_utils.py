@@ -53,6 +53,10 @@ def resolve_pptx_input(pptx_or_zip: Path, pick: str = "") -> Path:
             print(f"[unzip] {pptx_or_zip.name} -> {target.name}")
             with zf.open(member) as src, open(target, "wb") as dst:
                 dst.write(src.read())
+    # Always confirm which member matched — a shell-mangled --pick can quietly
+    # resolve to a wrong-but-still-unique substring; printing the choice makes
+    # that mismatch obvious instead of having the pipeline run on the wrong file.
+    print(f"[pptx] picked from zip: {target.name}")
     return target
 
 
@@ -64,14 +68,31 @@ def _die_with_listing(archive: Path, members: list[str], reason: str) -> None:
     raise SystemExit(2)
 
 
+_WINDOWS_SOFFICE_CANDIDATES = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+)
+
+
 def _find_soffice() -> str:
-    for candidate in ("soffice", "libreoffice"):
+    for candidate in ("soffice", "libreoffice", "soffice.exe"):
         found = shutil.which(candidate)
         if found:
             return found
+    # On Windows the installer doesn't add LibreOffice to PATH by default;
+    # look in the two standard install locations before giving up.
+    for path in _WINDOWS_SOFFICE_CANDIDATES:
+        if Path(path).exists():
+            return path
     raise SystemExit(
-        "LibreOffice not found on PATH. Install it (e.g. `apt-get install libreoffice` "
-        "or `brew install --cask libreoffice`) so pptx slides can be rendered to PDF."
+        "LibreOffice not found on PATH.\n"
+        "  Windows: install from https://www.libreoffice.org/download and, if\n"
+        "           the installer didn't add it to PATH, ensure soffice.exe is\n"
+        "           at 'C:\\Program Files\\LibreOffice\\program\\soffice.exe'.\n"
+        "  macOS:   brew install --cask libreoffice\n"
+        "  Linux:   apt-get install libreoffice  (or your distro's equivalent)\n"
+        "This is required so .pptx slides can be rendered to PNGs. If you only\n"
+        "need the JSON output right now, pass --no-images to skip the render step."
     )
 
 
