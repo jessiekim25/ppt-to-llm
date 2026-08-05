@@ -57,7 +57,6 @@ Return a JSON object with these fields.
 
 Slide-level string fields ("" if not visible):
 - product: general phone series (e.g. "Galaxy S"). "" if generic.
-- codename: campaign code name (e.g. "Miracle"). Only set if literally on the slide.
 - section: the top-left corner header — the deck's section/chapter indicator (e.g. "01 Brand Basics", "Campaign Assets", "Guidance usage", "Resources"). This is nearly ALWAYS present as small text near coordinates (x0 ≤ 0.15, y0 ≤ 0.06). Read that text verbatim and put it here — do NOT drop it as chrome. Only return "" if the slide genuinely has no top-left corner text.
 - sub_section: the slide's main title/heading (typically the largest text near the top of the slide, not counting the section label).
 - model: specific phone model shown (e.g. "Galaxy S26 Ultra"). "" if none.
