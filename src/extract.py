@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from openai import OpenAI
@@ -109,6 +110,120 @@ def _block_from_subheader(sh: dict) -> list[dict]:
     if child_blocks:
         block["children"] = child_blocks
     return [block] if block else []
+
+
+def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
+    """Convert one text frame's paragraphs (sorted top-to-bottom) into blocks.
+
+    - Bold paragraph -> a subheader block.
+    - Non-bold paragraph -> body of the most recent subheader (or a plain body
+      block at top level if no subheader has been seen yet in this group).
+    - Nesting: if the group has more than one distinct bold `size`, a bold
+      paragraph strictly smaller than the max bold size becomes a child of
+      the current parent — so a "KEY INITIATIVES" at 14pt nests under a
+      "Week 9-14, March" at 20pt in the same text box.
+    """
+    if not tls:
+        return []
+
+    bold_sizes = {tl.size for tl in tls if tl.bold and tl.size is not None}
+    parent_size = max(bold_sizes) if len(bold_sizes) >= 2 else None
+
+    top_level: list[dict] = []
+    current_parent: dict | None = None
+    current_child: dict | None = None
+
+    for tl in tls:
+        text = tl.text.strip()
+        if not text:
+            continue
+        is_subheader = tl.bold and len(text.split()) <= 10
+        if is_subheader:
+            is_child = (
+                parent_size is not None
+                and tl.size is not None
+                and tl.size < parent_size
+                and current_parent is not None
+            )
+            if is_child:
+                current_child = {"subheader": text}
+                current_parent.setdefault("children", []).append(current_child)
+            else:
+                current_parent = {"subheader": text}
+                current_child = None
+                top_level.append(current_parent)
+        else:
+            target = current_child if current_child is not None else current_parent
+            if target is None:
+                # Extend a preceding standalone-body block instead of starting a
+                # new one so a group of consecutive non-bold paragraphs (e.g. a
+                # legend: BACKLOG / UX/BUILD/QA / LIVE/DONE) stays as one body.
+                if top_level and set(top_level[-1].keys()) == {"body"}:
+                    top_level[-1]["body"] += f"\n{text}"
+                else:
+                    top_level.append({"body": text})
+            else:
+                existing = target.get("body", "")
+                target["body"] = f"{existing}\n{text}" if existing else text
+
+    return top_level
+
+
+def _build_detail_from_pptx_groups(
+    text_lines: list[TextLine],
+    tables: list[Table],
+    exclude_haystack: str,
+) -> list[dict]:
+    """Deterministically build the per-slide `detail` tree from pptx text frames.
+
+    The LLM is not asked to structure `detail` for pptx — every paragraph is
+    already tagged with `group_id` (its source text frame) plus `bold`/`size`
+    typography, which is enough to reconstruct subheader/body pairs and
+    parent/child nesting without any LLM guessing. Groups are ordered by
+    y-band then x so parallel columns (e.g. a 3-column roadmap) come out in
+    reading order.
+
+    `exclude_haystack` is a normalized string of slide-level values already
+    emitted elsewhere on the record (currently `sub_section`); any paragraph
+    whose normalized text is a substring of that haystack is dropped from
+    detail to avoid duplication.
+
+    Tables from python-pptx's native extraction append as `{"table": ...}`
+    blocks at the end, matching the PDF path.
+    """
+    if not text_lines and not tables:
+        return []
+
+    groups: dict[int, list[TextLine]] = defaultdict(list)
+    for tl in text_lines:
+        norm = _normalize_for_match(tl.text)
+        if norm and exclude_haystack and norm in exclude_haystack:
+            continue
+        groups[tl.group_id or 0].append(tl)
+
+    group_infos: list[dict] = []
+    for tls in groups.values():
+        tls.sort(key=lambda t: (t.bbox_pct[1], t.bbox_pct[0]))
+        blocks = _blocks_from_group_paragraphs(tls)
+        if not blocks:
+            continue
+        y0 = min(t.bbox_pct[1] for t in tls)
+        x0 = min(t.bbox_pct[0] for t in tls)
+        group_infos.append({"y0": y0, "x0": x0, "blocks": blocks})
+
+    # y-band to ~5% of page so parallel columns stay adjacent in output.
+    group_infos.sort(key=lambda g: (round(g["y0"] * 20), g["x0"]))
+
+    result: list[dict] = []
+    for gi in group_infos:
+        result.extend(gi["blocks"])
+
+    for t in tables:
+        rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
+        if rendered:
+            result.append({"table": rendered})
+
+    return result
 
 
 def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
@@ -602,8 +717,24 @@ def main() -> None:
             doc_id=doc_id,
             pre_extracted_tables=layout.tables,
         )
-        if is_pptx and is_section_intro:
-            record["is_section_intro"] = True
+        if is_pptx:
+            # Rebuild `detail` deterministically from the layout — the LLM
+            # keeps missing within-shape subheader splits (e.g. KEY INITIATIVES
+            # nested under Week 33-35) despite prompt guidance, and typography
+            # + group_id give us everything we need to do this without asking.
+            # Section-intro slides have no meaningful body — leave detail off.
+            if is_section_intro:
+                record.pop("detail", None)
+                record["is_section_intro"] = True
+            else:
+                exclude_haystack = _normalize_for_match(record.get("sub_section", ""))
+                new_detail = _build_detail_from_pptx_groups(
+                    layout.text_lines, layout.tables, exclude_haystack
+                )
+                if new_detail:
+                    record["detail"] = new_detail
+                else:
+                    record.pop("detail", None)
         records.append(record)
         text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
@@ -613,7 +744,11 @@ def main() -> None:
         _backfill_sections(records)
     for record in records:
         tls = text_lines_by_slide.get(record["slide_id"], [])
-        _append_missing_text(record, tls)
+        # PDF path only: the deterministic pptx builder already covers every
+        # paragraph in the source, so the belt-and-suspenders "append what the
+        # LLM dropped" step would just re-dump the same text.
+        if not is_pptx:
+            _append_missing_text(record, tls)
         _dedupe_detail(record)
 
     records = [_reorder_record(r) for r in records]
