@@ -20,16 +20,6 @@ from .pptx_utils import pptx_to_pdf, resolve_pptx_input
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
 
 
-def _is_pptx_input(path: Path) -> bool:
-    """True if `path` points at a .pptx (directly or wrapped in a .zip named *.pptx.zip)."""
-    name = path.name.lower()
-    if name.endswith(".pptx"):
-        return True
-    if name.endswith(".pptx.zip"):
-        return True
-    return False
-
-
 def _slug(text: str, max_len: int = 60) -> str:
     """Filesystem-safe slug: ASCII alnum, hyphen, underscore; spaces to underscores."""
     text = re.sub(r"[^A-Za-z0-9\s\-_]", "", str(text))
@@ -659,7 +649,11 @@ def main() -> None:
     if not input_path.exists():
         raise SystemExit(f"Input not found: {input_path}")
 
-    is_pptx = _is_pptx_input(input_path)
+    # Which flag was used is authoritative — the file's extension is not.
+    # A pptx-carrying zip is usually named "*.zip", not "*.pptx.zip", so
+    # extension-sniffing was misrouting `--pptx some.zip` into the PDF path
+    # and silently extracting the first .pdf inside.
+    is_pptx = args.pptx is not None
     settings = get_settings()
 
     if is_pptx:
