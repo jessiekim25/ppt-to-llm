@@ -100,13 +100,19 @@ def _paragraph_style(para) -> tuple[float | None, str, bool]:
 
 
 def _text_frame_lines(
-    shape, slide_w: int, slide_h: int, text_lines: list[TextLine]
+    shape,
+    slide_w: int,
+    slide_h: int,
+    text_lines: list[TextLine],
+    group_id: int,
 ) -> None:
     """Emit one TextLine per non-empty paragraph in this shape's text frame.
 
     We approximate per-paragraph bboxes by slicing the shape's bbox vertically
-    across N paragraphs. It's a rough approximation but good enough for the
-    LLM's geometric reasoning about column x-ranges and top-of-slide titles.
+    across N paragraphs. `group_id` tags every line from this one text frame
+    with the same integer so the LLM can split alternating bold/non-bold
+    paragraphs inside one box into subheader+body pairs without having to
+    guess grouping from x-alignment alone.
     """
     tf = shape.text_frame
     paras = list(tf.paragraphs)
@@ -133,6 +139,7 @@ def _text_frame_lines(
                 size=size,
                 font=font,
                 bold=bold,
+                group_id=group_id,
             )
         )
 
@@ -163,10 +170,13 @@ def _walk_shapes(
     text_lines: list[TextLine],
     tables: list[Table],
     figures: list[Figure],
+    counter: list[int],
 ) -> None:
+    """`counter` is a single-element list used as a mutable next-group-id
+    across the recursive walk (Python has no `nonlocal int` shorthand)."""
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            _walk_shapes(shape.shapes, slide_w, slide_h, text_lines, tables, figures)
+            _walk_shapes(shape.shapes, slide_w, slide_h, text_lines, tables, figures, counter)
             continue
 
         if shape.has_table:
@@ -179,7 +189,8 @@ def _walk_shapes(
             continue
 
         if shape.has_text_frame:
-            _text_frame_lines(shape, slide_w, slide_h, text_lines)
+            counter[0] += 1
+            _text_frame_lines(shape, slide_w, slide_h, text_lines, counter[0])
 
 
 def extract_slide_layout(pptx_path: Path, slide_num: int) -> PageLayout:
@@ -197,7 +208,7 @@ def extract_slide_layout(pptx_path: Path, slide_num: int) -> PageLayout:
     tables: list[Table] = []
     figures: list[Figure] = []
 
-    _walk_shapes(slide.shapes, slide_w, slide_h, text_lines, tables, figures)
+    _walk_shapes(slide.shapes, slide_w, slide_h, text_lines, tables, figures, counter=[0])
 
     # Drop text lines that fall inside any detected table's bbox — the table
     # extractor is authoritative for those (mirrors pdf_layout behavior).

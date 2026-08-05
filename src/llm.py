@@ -124,6 +124,8 @@ def build_payload(layout, page_num: int) -> dict:
             entry["size"] = round(float(tl.size), 2)
         if tl.bold:
             entry["bold"] = True
+        if tl.group_id is not None:
+            entry["group"] = tl.group_id
         text_lines.append(entry)
 
     figures = [
@@ -151,7 +153,7 @@ INPUT SHAPE:
 {
   "page_size": [width, height],
   "text_lines": [
-    {"bbox": [x0, y0, x1, y1], "text": "...", "size": 12.0, "bold": false}
+    {"bbox": [x0, y0, x1, y1], "text": "...", "size": 12.0, "bold": false, "group": 3}
   ],
   "figures": [
     {"idx": 1, "bbox": [x0, y0, x1, y1], "label": "..."}
@@ -162,8 +164,61 @@ All bboxes are TOP-LEFT origin, fractions of page (0-1). text_lines arrive rough
 Use text_lines' geometry and typography to reconstruct layout:
 - Larger `size` or `bold: true` marks a heading (slide title, subheader).
 - Text lines whose bboxes share the same x0/x1 across multiple rows are a single column.
+- `group` is a per-text-frame integer. Every text_line that came from the SAME text box in the source deck has the same `group` value. Use it as the strongest grouping signal — lines with the same `group` are guaranteed to be one visual block that must be interpreted together (see SPLITTING WITHIN ONE TEXT BLOCK below). Lines with different `group` values may still be adjacent on the slide, but they came from separate boxes; do not merge them without a geometric reason.
 - Tables have already been extracted. Do NOT emit tables in your output — there is no `tables` field. If you see text lines that visually resemble a table (grid-aligned rows/columns of short captions), treat each column as a separate subheader.
 - `figures[i].bbox` marks where an image sits — use it only to understand layout.
+
+SPLITTING WITHIN ONE TEXT BLOCK — critical for pptx:
+A single text box (all lines with the same `group`) often contains multiple subheader+body pairs stacked vertically. When the styling alternates — bold short line, then non-bold body line(s), then another bold short line, then more body — SPLIT the block into separate subheader entries. Do NOT concatenate the whole block into one flat body paragraph just because the lines came from one box or arrived adjacent in the input.
+
+  Example block (one group, four paragraphs):
+    - "KEY INITIATIVES"           (bold, ≤4 words)
+    - "- SIA rework"              (regular, bullet)
+    - "- Nav simplification"      (regular, bullet)
+    - "- Promo journey optimisation" (regular)
+  becomes ONE subheader:
+    { "title": "KEY INITIATIVES",
+      "detail": "- SIA rework\\n- Nav simplification\\n- Promo journey optimisation",
+      "children": [] }
+
+  Example nested block (one group, six paragraphs) — a time-frame column with a nested KEY INITIATIVES list:
+    - "Week 33 - 35, August"       (large, bold)
+    - "KEY INITIATIVES"            (bold, smaller)
+    - "- SIA rework"               (regular)
+    - "- Nav simplification"       (regular)
+    - "- Cart optimisation"        (regular)
+    - "- Promo journey optimisation" (regular)
+  becomes:
+    { "title": "Week 33 - 35, August",
+      "detail": "",
+      "children": [
+        { "title": "KEY INITIATIVES",
+          "detail": "- SIA rework\\n- Nav simplification\\n- Cart optimisation\\n- Promo journey optimisation",
+          "children": [] }
+      ] }
+
+WORKED EXAMPLE — three-column roadmap slide with nested subheaders:
+Suppose the slide's main title is "COP - Optimisation Road Map" at the top, and BELOW it there are three parallel columns at similar y0, each in its own text group:
+   left column   (group A): "Week 33 - 35, August"    + "KEY INITIATIVES" + bullets
+   middle column (group B): "Week 36 - 40, September" + "KEY INITIATIVES" + bullets
+   right column  (group C): "Week 40 - 44, October"   + "KEY INITIATIVES" + bullets
+Plus a small legend in the bottom-left (BACKLOG / UX/BUILD/QA / LIVE/DONE).
+
+Expected output:
+   sub_section = "COP - Optimisation Road Map"
+   detail      = "BACKLOG\\nUX/BUILD/QA\\nLIVE/DONE"   (or whatever the legend text is, verbatim)
+   subheaders  = [
+     { "title": "Week 33 - 35, August",
+       "detail": "",
+       "children": [ { "title": "KEY INITIATIVES", "detail": "<bullets from left column verbatim>", "children": [] } ] },
+     { "title": "Week 36 - 40, September",
+       "detail": "",
+       "children": [ { "title": "KEY INITIATIVES", "detail": "<bullets from middle column verbatim>", "children": [] } ] },
+     { "title": "Week 40 - 44, October",
+       "detail": "",
+       "children": [ { "title": "KEY INITIATIVES", "detail": "<bullets from right column verbatim>", "children": [] } ] }
+   ]
+Notice the three "KEY INITIATIVES" occurrences are each their own child under their own time-frame parent — do NOT merge them into one, and do NOT hoist their bullets into the slide-level detail.
 
 COMPLETENESS RULE — highest priority:
 Every text line in the payload MUST appear somewhere in your output — as one of the slide-level string fields, in slide-level `detail`, inside a subheader's `title`/`detail`, or nested in `children`. NEVER drop a text line as "noise" or "already visible on the slide". The only exemptions are purely decorative fragments with no words and PAGE CHROME (below).
@@ -220,7 +275,7 @@ Content fields:
         - strictly larger `size` than the text that follows, OR
         - `bold: true` while the text that follows is not bold.
       IMPORTANT: bold-vs-non-bold is the STRONGEST signal in this deck — most subheaders and even table column labels are set in bold with the body text below them in regular weight. Whenever you see a short bold line immediately followed by longer non-bold text that reads as its explanation, treat the bold line as a subheader by default. Do NOT swallow it into the body paragraph.
-    (γ) At least one text line of descriptive body directly under/beside it.
+    (γ) At least one text line beneath/beside it that will become its content — EITHER a descriptive body line OR another qualifying subheader that becomes a child. A bold "Week 33 - 35, August" heading whose only content below is another bold "KEY INITIATIVES" subheader (which in turn owns the bullets) still satisfies (γ) because the child block becomes its `children`. Only a short bold phrase with NOTHING beneath it — no body, no child subheader — is decorative; put it in slide-level `detail` verbatim.
   If a candidate fails ANY of (α)/(β)/(γ), it is body text — merge it back into the surrounding paragraph in `detail`. But don't discard weak-typography short lines just because you're unsure — err on the side of promoting a plausibly-bold short line to a subheader when the line after it looks like body copy.
 
   STRICT RULES:

@@ -33,6 +33,11 @@ class TextLine:
     size: float | None
     font: str = ""
     bold: bool = False
+    # Optional grouping hint: paragraphs sharing the same group_id came from the
+    # same source container (pptx text frame). PDF path leaves this None; the
+    # pptx path sets a per-shape integer so the LLM can split alternating
+    # bold/non-bold paragraphs inside one text box into subheader+body pairs.
+    group_id: int | None = None
 
 
 @dataclass
