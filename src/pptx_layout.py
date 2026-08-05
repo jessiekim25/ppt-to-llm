@@ -64,13 +64,11 @@ def _resolve_bold(flag, font_name: str, para_flag=None, para_font: str = "") -> 
     return False
 
 
-def _paragraph_style(para) -> tuple[float | None, str, bool]:
-    """Return (font_size_pt, font_name, is_bold) from the first non-empty run.
+def _paragraph_defaults(para) -> tuple[float | None, str, bool | None]:
+    """Return the paragraph-level (size_pt, font_name, bold_flag) defaults.
 
-    Size falls back to paragraph-level default; bold combines run flag,
-    paragraph flag, and font-name inspection so slides that inherit weight
-    from the theme still get flagged bold (which is how most subheaders and
-    table column headers are styled).
+    bold_flag is a tri-state (True/False/None) so callers can distinguish
+    "explicit False" from "inherit" when resolving run bold.
     """
     para_font_name = para.font.name or ""
     para_bold_flag = para.font.bold  # True / False / None
@@ -80,23 +78,79 @@ def _paragraph_style(para) -> tuple[float | None, str, bool]:
             para_size = float(para.font.size.pt)
     except Exception:
         para_size = None
+    return para_size, para_font_name, para_bold_flag
+
+
+def _paragraph_segments(para) -> list[tuple[str, float | None, str, bool]]:
+    """Split a paragraph into (text, size, font, bold) segments, one per
+    contiguous run of the same bold state.
+
+    A pptx paragraph like "**KEY INITIATIVES**: SIA rework" (only the first
+    part bold) becomes TWO segments so downstream can turn the bold prefix
+    into a subheader and the non-bold tail into that subheader's body — the
+    previous first-run-wins style detection collapsed the whole paragraph
+    into one bold-or-not line and lost that split.
+    """
+    para_size, para_font_name, para_bold_flag = _paragraph_defaults(para)
+
+    segments: list[tuple[str, float | None, str, bool]] = []
+    cur_text_parts: list[str] = []
+    cur_size: float | None = None
+    cur_font: str = ""
+    cur_bold: bool | None = None  # None until we see the first run
+
+    def flush():
+        if not cur_text_parts:
+            return
+        text = " ".join("".join(cur_text_parts).split())
+        if text:
+            segments.append((text, cur_size, cur_font, bool(cur_bold)))
 
     for run in para.runs:
-        if not (run.text or "").strip():
+        text = run.text or ""
+        if not text.strip():
+            # Whitespace-only run: attach to whatever segment is being built
+            # so we don't accidentally split "KEY INITIATIVES" from ":" when
+            # the colon happens to be its own space-only run.
+            if cur_bold is not None:
+                cur_text_parts.append(text)
             continue
-        size = None
+
+        run_size = None
         try:
             if run.font.size is not None:
-                size = float(run.font.size.pt)
+                run_size = float(run.font.size.pt)
         except Exception:
-            size = None
-        if size is None:
-            size = para_size
-        font = run.font.name or para_font_name
-        bold = _resolve_bold(run.font.bold, font, para_bold_flag, para_font_name)
-        return size, font, bold
+            run_size = None
+        if run_size is None:
+            run_size = para_size
 
-    return para_size, para_font_name, _resolve_bold(para_bold_flag, para_font_name)
+        run_font = run.font.name or para_font_name
+        run_bold = _resolve_bold(run.font.bold, run_font, para_bold_flag, para_font_name)
+
+        if cur_bold is None:
+            cur_bold = run_bold
+            cur_size = run_size
+            cur_font = run_font
+            cur_text_parts.append(text)
+        elif run_bold == cur_bold:
+            cur_text_parts.append(text)
+        else:
+            flush()
+            cur_text_parts = [text]
+            cur_bold = run_bold
+            cur_size = run_size
+            cur_font = run_font
+
+    flush()
+
+    if not segments:
+        # No runs at all — fall back to paragraph.text with paragraph-level style.
+        text = " ".join((para.text or "").split())
+        if text:
+            segments.append((text, para_size, para_font_name,
+                             _resolve_bold(para_bold_flag, para_font_name)))
+    return segments
 
 
 def _text_frame_lines(
@@ -106,13 +160,16 @@ def _text_frame_lines(
     text_lines: list[TextLine],
     group_id: int,
 ) -> None:
-    """Emit one TextLine per non-empty paragraph in this shape's text frame.
+    """Emit one TextLine per bold/non-bold segment in the text frame's paragraphs.
 
-    We approximate per-paragraph bboxes by slicing the shape's bbox vertically
-    across N paragraphs. `group_id` tags every line from this one text frame
-    with the same integer so the LLM can split alternating bold/non-bold
-    paragraphs inside one box into subheader+body pairs without having to
-    guess grouping from x-alignment alone.
+    All segments in this frame share the same `group_id`. Per-paragraph bboxes
+    are approximated by slicing the shape bbox vertically; segments within one
+    paragraph share that paragraph's slice (real x-offsets within a run aren't
+    exposed by python-pptx).
+
+    Defensive dedup: within one frame we skip a segment that exactly matches
+    the previous segment's (text, bold) — pptx placeholders sometimes echo
+    the same run into a slide via layout inheritance.
     """
     tf = shape.text_frame
     paras = list(tf.paragraphs)
@@ -125,23 +182,26 @@ def _text_frame_lines(
     n = len(non_empty)
     slice_h = height / n if n else 0.0
 
+    last_seen: tuple[str, bool] | None = None
     for i, para in enumerate(non_empty):
-        text = " ".join((para.text or "").split())
-        if not text:
-            continue
-        size, font, bold = _paragraph_style(para)
         py0 = y0 + i * slice_h
         py1 = y0 + (i + 1) * slice_h if i < n - 1 else y1
-        text_lines.append(
-            TextLine(
-                bbox_pct=(x0, py0, x1, py1),
-                text=text,
-                size=size,
-                font=font,
-                bold=bold,
-                group_id=group_id,
+        segments = _paragraph_segments(para)
+        for (seg_text, seg_size, seg_font, seg_bold) in segments:
+            key = (seg_text.lower(), seg_bold)
+            if key == last_seen:
+                continue
+            last_seen = key
+            text_lines.append(
+                TextLine(
+                    bbox_pct=(x0, py0, x1, py1),
+                    text=seg_text,
+                    size=seg_size,
+                    font=seg_font,
+                    bold=seg_bold,
+                    group_id=group_id,
+                )
             )
-        )
 
 
 def _table_to_model(shape, slide_w: int, slide_h: int) -> Table:
