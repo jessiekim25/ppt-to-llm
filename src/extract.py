@@ -12,8 +12,21 @@ from .corpus import build_corpus
 from .llm import build_payload, extract_slide
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
+from .pptx_layout import extract_slide_layout as extract_pptx_slide_layout
+from .pptx_layout import slide_count as pptx_slide_count
+from .pptx_utils import pptx_to_pdf, resolve_pptx_input
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
+
+
+def _is_pptx_input(path: Path) -> bool:
+    """True if `path` points at a .pptx (directly or wrapped in a .zip named *.pptx.zip)."""
+    name = path.name.lower()
+    if name.endswith(".pptx"):
+        return True
+    if name.endswith(".pptx.zip"):
+        return True
+    return False
 
 
 def _slug(text: str, max_len: int = 60) -> str:
@@ -171,13 +184,18 @@ def build_slide_record(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Convert a campaign visual guideline PDF into per-slide JSON records for LLM retrieval.",
+        description="Convert a PDF or PPTX deck into per-slide JSON records for LLM retrieval.",
     )
-    p.add_argument(
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument(
         "--pdf",
-        required=True,
         type=Path,
-        help="Path to the guideline PDF, or to a .zip containing one (extracted automatically).",
+        help="Path to a PDF, or to a .zip containing one (extracted automatically).",
+    )
+    src.add_argument(
+        "--pptx",
+        type=Path,
+        help="Path to a .pptx, or to a .zip containing one (extracted automatically).",
     )
     p.add_argument(
         "--output-dir",
@@ -217,8 +235,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _resolve_page_nums(pdf_path: Path, pages: set[int] | None, limit: int) -> list[int]:
-    total = page_count(pdf_path)
+def _resolve_page_nums(total: int, pages: set[int] | None, limit: int) -> list[int]:
     if pages:
         return sorted(p for p in pages if 1 <= p <= total)
     nums = list(range(1, total + 1))
@@ -229,8 +246,8 @@ def _backfill_sections(records: list[dict]) -> None:
     """Slides without an explicit `section` inherit the last non-empty one seen.
 
     Section indicators sit in the top-left corner of nearly every slide in a
-    deck but the LLM sometimes misses them. Sections rarely change mid-deck,
-    so carrying the last seen value forward fills the gaps correctly.
+    guideline deck but the LLM sometimes misses them. Sections rarely change
+    mid-deck, so carrying the last seen value forward fills the gaps correctly.
     """
     last = ""
     for r in records:
@@ -239,6 +256,26 @@ def _backfill_sections(records: list[dict]) -> None:
             last = current
         elif last:
             r["section"] = last
+
+
+def _propagate_sections_from_intros(records: list[dict]) -> None:
+    """PPTX section rule: each section starts with an intro slide whose sole
+    purpose is naming a new section (e.g. a "Roadmap" or "March review" cover
+    slide). Every subsequent slide belongs to that section until the next
+    intro slide. The LLM tags intro slides with `is_section_intro: true` and
+    puts the section title in `section`; content slides leave `section`
+    empty and inherit it here.
+    """
+    current = ""
+    for r in records:
+        if r.pop("is_section_intro", False):
+            intro_section = r.get("section", "").strip()
+            if intro_section:
+                current = intro_section
+        else:
+            r.pop("is_section_intro", None)
+            if not r.get("section", "").strip() and current:
+                r["section"] = current
 
 
 def _normalize_for_match(s: str) -> str:
@@ -458,38 +495,58 @@ def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
 def main() -> None:
     args = parse_args()
 
-    if not args.pdf.exists():
-        raise SystemExit(f"Input not found: {args.pdf}")
+    input_path: Path = args.pptx if args.pptx is not None else args.pdf
+    if not input_path.exists():
+        raise SystemExit(f"Input not found: {input_path}")
 
-    pdf_path = resolve_pdf_input(args.pdf)
+    is_pptx = _is_pptx_input(input_path)
     settings = get_settings()
 
-    pages = parse_pages(args.pages) if args.pages else None
-    page_nums = _resolve_page_nums(pdf_path, pages, args.limit)
+    if is_pptx:
+        pptx_path = resolve_pptx_input(input_path)
+        source_stem = pptx_path.stem
+        per_file_dir = args.output_dir / source_stem
+        per_file_dir.mkdir(parents=True, exist_ok=True)
+        # Companion PDF lives beside the pptx, not inside output/. Rendered
+        # PNGs are the artifact; the intermediate PDF is a cache.
+        render_pdf_path = pptx_to_pdf(pptx_path, pptx_path.parent)
+        total_slides = pptx_slide_count(pptx_path)
+        extract_layout = lambda n: extract_pptx_slide_layout(pptx_path, n)
+        llm_kind = "pptx"
+    else:
+        pdf_path = resolve_pdf_input(input_path)
+        source_stem = pdf_path.stem
+        per_file_dir = args.output_dir / source_stem
+        per_file_dir.mkdir(parents=True, exist_ok=True)
+        render_pdf_path = pdf_path
+        total_slides = page_count(pdf_path)
+        extract_layout = lambda n: extract_page_layout(pdf_path, n)
+        llm_kind = "pdf"
 
-    per_file_dir = args.output_dir / pdf_path.stem
-    per_file_dir.mkdir(parents=True, exist_ok=True)
+    pages = parse_pages(args.pages) if args.pages else None
+    page_nums = _resolve_page_nums(total_slides, pages, args.limit)
 
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"product": args.product}
-    doc_id = _slug(pdf_path.stem)
+    doc_id = _slug(source_stem)
 
     records: list[dict] = []
     text_lines_by_slide: dict[str, list[TextLine]] = {}
     for i, page_num in enumerate(page_nums, start=1):
         print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
-            layout = extract_page_layout(pdf_path, page_num)
+            layout = extract_layout(page_num)
             payload = build_payload(layout, page_num)
-            data = extract_slide(client, settings.openai_model, payload)
+            data = extract_slide(client, settings.openai_model, payload, kind=llm_kind)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
 
+        is_section_intro = bool(data.get("is_section_intro", False)) if is_pptx else False
         data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
 
         slide_image_name = f"slide_{page_num:03d}.png"
-        rendered = render_page(pdf_path, page_num, dpi=args.dpi)
+        rendered = render_page(render_pdf_path, page_num, dpi=args.dpi)
         rendered.save(per_file_dir / slide_image_name, format="PNG")
 
         record = build_slide_record(
@@ -500,10 +557,15 @@ def main() -> None:
             doc_id=doc_id,
             pre_extracted_tables=layout.tables,
         )
+        if is_pptx and is_section_intro:
+            record["is_section_intro"] = True
         records.append(record)
         text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
-    _backfill_sections(records)
+    if is_pptx:
+        _propagate_sections_from_intros(records)
+    else:
+        _backfill_sections(records)
     for record in records:
         tls = text_lines_by_slide.get(record["slide_id"], [])
         _append_missing_text(record, tls)

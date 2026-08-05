@@ -1,6 +1,6 @@
 # ppt-to-llm
 
-Convert Samsung campaign visual identity PDFs (or PPT exports) into structured **JSON records per slide**, one per-file `slides.jsonl` for display, one per-file `chunks.jsonl` for retrieval, and a combined `corpus/chunks.jsonl` that concatenates every file for a downstream RAG agent. Layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
+Convert Samsung campaign visual identity **PDFs or PowerPoint (`.pptx`) decks** into structured **JSON records per slide**, one per-file `slides.jsonl` for display, one per-file `chunks.jsonl` for retrieval, and a combined `corpus/chunks.jsonl` that concatenates every file for a downstream RAG agent. Layout is flexible, so hundreds of slides with wildly different structures all fit the same schema.
 
 ## Slide record schema
 
@@ -98,6 +98,9 @@ Extract auto-rebuilds the corpus after each run — so if you extract file A tod
 
 ## How it works
 
+The pipeline dispatches on input type; both paths produce the same slide/chunk schema.
+
+**PDF path** (`--pdf`):
 1. For each slide:
    - `pdfminer.six` collects text lines (with bboxes, font size, bold flag) at paragraph (LTTextBox) granularity, plus vector/raster primitives that cluster into figure regions.
    - `pdfplumber` detects any ruled tables on the page and returns their columns/rows/bboxes. Text lines whose center falls inside a detected table bbox are dropped from the LLM payload so the pre-extracted table content stays authoritative.
@@ -107,6 +110,15 @@ Extract auto-rebuilds the corpus after each run — so if you extract file A tod
 
 Text and table extraction are geometric (pdfminer + pdfplumber) — the LLM only interprets typography + coordinates for hierarchy. This eliminates vision-token cost and keeps proprietary slide artwork inside your environment.
 
+**PPTX path** (`--pptx`):
+1. For each slide:
+   - `python-pptx` walks the slide's shape tree and emits one text line per paragraph (with bbox, font size, bold) plus tables (columns + rows) and picture bboxes — no geometric reconstruction needed because pptx already stores positions natively.
+2. Same LLM call as the PDF path, but with a **PPT-specific system prompt**: no top-left "section" chrome to extract. Instead the LLM tags each slide with `is_section_intro: true|false`.
+   - A section-intro slide is one whose sole purpose is naming a new section — a big title like "Roadmap", "March review", or "Live tests" with little else. Its title becomes the `section` for that slide **and every subsequent slide** until the next section-intro slide.
+   - Regular content slides leave `section` empty; the extractor propagates the last-seen intro's section forward in post-processing.
+3. Render the slide to `slide_NNN.png` by first converting the pptx to a companion PDF via `soffice --headless --convert-to pdf` (LibreOffice), then reusing the same `pypdfium2` renderer as the PDF path. The intermediate PDF is cached next to the pptx and reused across runs.
+4. Compose and write records exactly like the PDF path.
+
 ## Setup
 
 ```bash
@@ -114,6 +126,16 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate
 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+```
+
+**Extra dependency for `--pptx`**: [LibreOffice](https://www.libreoffice.org/) must be on `PATH` (`soffice` or `libreoffice`) so pptx slides can be rendered to PNG via a companion PDF.
+
+```bash
+# macOS
+brew install --cask libreoffice
+# Debian/Ubuntu
+sudo apt-get install libreoffice
+# Windows: install LibreOffice and make sure soffice.exe is on PATH.
 ```
 
 The OpenAI key lives in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`:
@@ -138,7 +160,22 @@ python -m src.extract ^
   --output-dir "C:\Users\yebin.kim\brand_guideline_output\files"
 ```
 
-Extract also builds this file's `chunks.jsonl` and refreshes the combined `corpus/chunks.jsonl`. Add `--no-chunk` or `--no-corpus` to skip either step (e.g. when batch-extracting several PDFs before consolidating).
+Extract also builds this file's `chunks.jsonl` and refreshes the combined `corpus/chunks.jsonl`. Add `--no-chunk` or `--no-corpus` to skip either step (e.g. when batch-extracting several files before consolidating).
+
+## Run against a PowerPoint deck
+
+Point `--pptx` at a `.pptx` (or a `.zip` containing one). Everything else — output layout, chunks, corpus refresh — is identical to the PDF path.
+
+```bash
+# Windows
+python -m src.extract ^
+  --pptx "C:\Users\yebin.kim\March_campaign_review.pptx" ^
+  --output-dir "C:\Users\yebin.kim\brand_guideline_output\files"
+```
+
+The first run per deck spends a few seconds converting the pptx to a companion PDF via LibreOffice; that PDF is cached beside the pptx and skipped on subsequent runs (regenerated only if the source pptx is newer).
+
+**Section behavior for pptx.** Section labels are not read from a top-left header (as they are in the guideline PDF). Instead, the extractor looks for "section-intro" slides — slides whose only content is a big title naming the next section (e.g. `Roadmap`, `March review`, `Live tests`). The intro slide's title becomes the `section` for that slide and for every following slide until the next intro slide.
 
 ### Re-chunk or rebuild the corpus without re-extracting
 
@@ -197,12 +234,14 @@ output/
 
 ```
 src/
-  extract.py         # CLI entry point; builds slide records, then chunks + corpus
+  extract.py         # CLI entry point; dispatches PDF vs PPTX, then chunks + corpus
   chunk.py           # slides.jsonl -> chunks.jsonl (deterministic flatten)
   corpus.py          # every file's chunks.jsonl -> corpus/chunks.jsonl + manifest.json
   pdf_layout.py      # pdfminer.six text/figures + pdfplumber tables per page
-  pdf_utils.py       # page rendering (pypdfium2) + zip input handling
-  llm.py             # OpenAI text-only extraction (positioned text -> structured JSON)
+  pdf_utils.py       # PDF page rendering (pypdfium2) + .pdf.zip input handling
+  pptx_layout.py     # python-pptx text/tables/pictures per slide (PageLayout-shaped)
+  pptx_utils.py     # pptx -> companion PDF (LibreOffice headless) + .pptx.zip input handling
+  llm.py             # OpenAI text-only extraction (PDF + PPTX prompts, positioned text -> structured JSON)
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass
