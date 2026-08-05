@@ -7,13 +7,13 @@ from openai import OpenAI
 
 from shared.settings import get_settings
 
-from .chunk import chunk_deck
+from .chunk import chunk_file
 from .corpus import build_corpus
 from .llm import build_payload, extract_slide
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
 
-SLIDE_FIELDS = ("product", "codename", "section", "sub_section", "model")
+SLIDE_FIELDS = ("product", "section", "sub_section", "model")
 
 
 def _slug(text: str, max_len: int = 60) -> str:
@@ -159,9 +159,8 @@ def build_slide_record(
     detail = _compose_detail(extracted, pre_extracted_tables)
 
     record: dict = {
-        "doc_id": doc_id,
-        "slide_num": page_num,
         "slide_id": f"{doc_id}#{page_num:03d}",
+        "doc_id": doc_id,
     }
     record.update(fields)
     if detail:
@@ -183,8 +182,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output/decks"),
-        help="Root directory for per-deck folders (each holds slides.jsonl, chunks.jsonl, and screenshots).",
+        default=Path("output/files"),
+        help="Root directory for per-file folders (each holds slides.jsonl, chunks.jsonl, and screenshots).",
     )
     p.add_argument(
         "--corpus-out",
@@ -202,7 +201,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip rebuilding the combined corpus file after extraction.",
     )
-    p.add_argument("--codename", default="", help="Fallback codename when not visible on a slide.")
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
@@ -469,15 +467,15 @@ def main() -> None:
     pages = parse_pages(args.pages) if args.pages else None
     page_nums = _resolve_page_nums(pdf_path, pages, args.limit)
 
-    per_deck_dir = args.output_dir / pdf_path.stem
-    per_deck_dir.mkdir(parents=True, exist_ok=True)
+    per_file_dir = args.output_dir / pdf_path.stem
+    per_file_dir.mkdir(parents=True, exist_ok=True)
 
     client = OpenAI(api_key=settings.openai_api_key)
-    defaults = {"codename": args.codename, "product": args.product}
+    defaults = {"product": args.product}
     doc_id = _slug(pdf_path.stem)
 
     records: list[dict] = []
-    text_lines_by_page: dict[int, list[TextLine]] = {}
+    text_lines_by_slide: dict[str, list[TextLine]] = {}
     for i, page_num in enumerate(page_nums, start=1):
         print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
@@ -492,23 +490,22 @@ def main() -> None:
 
         slide_image_name = f"slide_{page_num:03d}.png"
         rendered = render_page(pdf_path, page_num, dpi=args.dpi)
-        rendered.save(per_deck_dir / slide_image_name, format="PNG")
+        rendered.save(per_file_dir / slide_image_name, format="PNG")
 
-        records.append(
-            build_slide_record(
-                data,
-                page_num=page_num,
-                slide_image_name=slide_image_name,
-                defaults=defaults,
-                doc_id=doc_id,
-                pre_extracted_tables=layout.tables,
-            )
+        record = build_slide_record(
+            data,
+            page_num=page_num,
+            slide_image_name=slide_image_name,
+            defaults=defaults,
+            doc_id=doc_id,
+            pre_extracted_tables=layout.tables,
         )
-        text_lines_by_page[page_num] = layout.text_lines
+        records.append(record)
+        text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
     _backfill_sections(records)
     for record in records:
-        tls = text_lines_by_page.get(record.get("slide_num", -1), [])
+        tls = text_lines_by_slide.get(record["slide_id"], [])
         _append_missing_text(record, tls)
         _dedupe_detail(record)
 
@@ -517,7 +514,7 @@ def main() -> None:
             print(json.dumps(r, ensure_ascii=False))
         return
 
-    out_path = per_deck_dir / "slides.jsonl"
+    out_path = per_file_dir / "slides.jsonl"
     with out_path.open("w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r, ensure_ascii=False))
@@ -526,7 +523,7 @@ def main() -> None:
 
     if args.no_chunk:
         return
-    chunk_deck(per_deck_dir)
+    chunk_file(per_file_dir)
 
     if args.no_corpus:
         return

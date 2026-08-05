@@ -1,15 +1,15 @@
-"""Concatenate every deck's chunks.jsonl into one corpus file for downstream RAG.
+"""Concatenate every file's chunks.jsonl into one corpus file for downstream RAG.
 
 Layout produced:
 
     output/
-      decks/
+      files/
         <doc_id>/
           slides.jsonl
-          chunks.jsonl              # authoritative per-deck
+          chunks.jsonl              # authoritative per-file
           slide_NNN.png
       corpus/
-        chunks.jsonl                # concatenation of every deck's chunks.jsonl
+        chunks.jsonl                # concatenation of every file's chunks.jsonl
         manifest.json               # {doc_id: {chunk_count, sha256, built_at}}
 
 The corpus file is a derived artifact — safe to delete and rebuild anytime. It's
@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _iter_deck_chunks_files(decks_dir: Path):
-    for child in sorted(decks_dir.iterdir()):
+def _iter_file_chunks(files_dir: Path):
+    for child in sorted(files_dir.iterdir()):
         if not child.is_dir():
             continue
         chunks_path = child / "chunks.jsonl"
@@ -40,10 +40,10 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_corpus(decks_dir: Path, out_path: Path) -> tuple[int, int]:
-    """Rewrite the corpus file from all deck chunks.jsonl. Returns (deck_count, chunk_count)."""
-    if not decks_dir.exists():
-        raise FileNotFoundError(f"Decks dir not found: {decks_dir}")
+def build_corpus(files_dir: Path, out_path: Path) -> tuple[int, int]:
+    """Rewrite the corpus file from every per-file chunks.jsonl. Returns (file_count, chunk_count)."""
+    if not files_dir.exists():
+        raise FileNotFoundError(f"Files dir not found: {files_dir}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = out_path.parent / "manifest.json"
@@ -54,23 +54,23 @@ def build_corpus(decks_dir: Path, out_path: Path) -> tuple[int, int]:
 
     tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
     with tmp_path.open("w", encoding="utf-8") as dst:
-        for doc_id, chunks_path in _iter_deck_chunks_files(decks_dir):
-            deck_count = 0
+        for doc_id, chunks_path in _iter_file_chunks(files_dir):
+            file_count = 0
             with chunks_path.open("r", encoding="utf-8") as src:
                 for line in src:
                     if not line.strip():
                         continue
                     dst.write(line if line.endswith("\n") else line + "\n")
-                    deck_count += 1
+                    file_count += 1
             manifest[doc_id] = {
-                "chunk_count": deck_count,
+                "chunk_count": file_count,
                 "sha256": _hash_file(chunks_path),
                 "built_at": built_at,
-                "source": str(chunks_path.relative_to(decks_dir.parent))
-                if decks_dir.parent in chunks_path.parents
+                "source": str(chunks_path.relative_to(files_dir.parent))
+                if files_dir.parent in chunks_path.parents
                 else str(chunks_path),
             }
-            total_chunks += deck_count
+            total_chunks += file_count
 
     tmp_path.replace(out_path)
 
@@ -79,7 +79,7 @@ def build_corpus(decks_dir: Path, out_path: Path) -> tuple[int, int]:
         f.write("\n")
 
     print(
-        f"[corpus] wrote {total_chunks} chunk(s) from {len(manifest)} deck(s) "
+        f"[corpus] wrote {total_chunks} chunk(s) from {len(manifest)} file(s) "
         f"to {out_path}; manifest at {manifest_path}"
     )
     return len(manifest), total_chunks
@@ -87,13 +87,13 @@ def build_corpus(decks_dir: Path, out_path: Path) -> tuple[int, int]:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Concatenate all per-deck chunks.jsonl into one corpus file.",
+        description="Concatenate every per-file chunks.jsonl into one corpus file.",
     )
     p.add_argument(
-        "--decks-dir",
+        "--files-dir",
         type=Path,
-        default=Path("output/decks"),
-        help="Root directory holding per-deck folders (each with chunks.jsonl).",
+        default=Path("output/files"),
+        help="Root directory holding per-file folders (each with chunks.jsonl).",
     )
     p.add_argument(
         "--out",
@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    build_corpus(args.decks_dir, args.out)
+    build_corpus(args.files_dir, args.out)
 
 
 if __name__ == "__main__":

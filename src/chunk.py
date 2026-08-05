@@ -5,8 +5,7 @@ Each output row is one slide, retrieval-shaped:
     {
       "slide_id":   "<doc>#NNN",
       "doc_id":     "<doc>",
-      "slide_num":  42,
-      "image_path": "decks/<doc>/slide_042.png",   # relative to the corpus root
+      "image_path": "files/<doc>/slide_042.png",   # relative to the corpus root
       "embed_text": "<flattened prose the embedder consumes verbatim>",
       "metadata":   { flat scalars for filtering }
     }
@@ -119,16 +118,15 @@ def _walk_blocks(blocks: list, out: list[str], parent_label: str = "") -> None:
 
 
 def _build_embed_text(slide: dict) -> str:
-    """Deterministic flatten: '{product} {codename} — {section} / {sub_section}. <detail sentences>.'"""
+    """Deterministic flatten: '{product} — {section} / {sub_section}. <detail sentences>.'"""
     product = str(slide.get("product", "") or "").strip()
-    codename = str(slide.get("codename", "") or "").strip()
     model = str(slide.get("model", "") or "").strip()
     section = str(slide.get("section", "") or "").strip()
     sub_section = str(slide.get("sub_section", "") or "").strip()
 
     header_bits: list[str] = []
-    if product or codename:
-        header_bits.append(" ".join(x for x in (product, codename) if x))
+    if product:
+        header_bits.append(product)
     if model and model != product:
         header_bits.append(f"({model})")
     section_bits = [x for x in (section, sub_section) if x]
@@ -169,20 +167,18 @@ def slide_to_chunk(slide: dict, doc_id: str, image_dir: str | None = None) -> di
     slide_id = slide.get("slide_id") or f"{doc_id}#{slide_num:03d}"
     image_basename = str(slide.get("slide_image_path", "") or "").strip()
     folder = image_dir if image_dir else doc_id
-    image_path = f"decks/{folder}/{image_basename}" if image_basename else ""
+    image_path = f"files/{folder}/{image_basename}" if image_basename else ""
 
     embed_text = _build_embed_text(slide)
     detail = slide.get("detail") or []
 
     metadata: dict = {
         "product": str(slide.get("product", "") or "").strip(),
-        "codename": str(slide.get("codename", "") or "").strip(),
         "model": str(slide.get("model", "") or "").strip(),
         "section": str(slide.get("section", "") or "").strip(),
         "sub_section": str(slide.get("sub_section", "") or "").strip(),
         "has_table": _has_any(detail, "table"),
         "has_subheaders": _has_any(detail, "subheader"),
-        "text_len": len(embed_text),
         "is_visual_only": len(embed_text) < _VISUAL_ONLY_THRESHOLD,
     }
     # Drop empty scalar fields so metadata stays sparse.
@@ -191,26 +187,25 @@ def slide_to_chunk(slide: dict, doc_id: str, image_dir: str | None = None) -> di
     return {
         "slide_id": slide_id,
         "doc_id": doc_id,
-        "slide_num": slide_num,
         "image_path": image_path,
         "embed_text": embed_text,
         "metadata": metadata,
     }
 
 
-def chunk_deck(deck_dir: Path) -> Path:
-    """Read <deck>/slides.jsonl and write <deck>/chunks.jsonl beside it. Returns the output path.
+def chunk_file(file_dir: Path) -> Path:
+    """Read <file>/slides.jsonl and write <file>/chunks.jsonl beside it. Returns the output path.
 
     doc_id comes from each slide record (authoritative — extract slugs it),
     not the folder name. The image_path we emit uses the folder name so it
     resolves against the actual filesystem.
     """
-    slides_path = deck_dir / "slides.jsonl"
+    slides_path = file_dir / "slides.jsonl"
     if not slides_path.exists():
         raise FileNotFoundError(f"slides.jsonl not found: {slides_path}")
 
-    deck_name = deck_dir.name
-    out_path = deck_dir / "chunks.jsonl"
+    folder_name = file_dir.name
+    out_path = file_dir / "chunks.jsonl"
     count = 0
     with slides_path.open("r", encoding="utf-8") as src, out_path.open(
         "w", encoding="utf-8"
@@ -220,8 +215,8 @@ def chunk_deck(deck_dir: Path) -> Path:
             if not line:
                 continue
             slide = json.loads(line)
-            doc_id = str(slide.get("doc_id", "") or "").strip() or deck_name
-            chunk = slide_to_chunk(slide, doc_id, image_dir=deck_name)
+            doc_id = str(slide.get("doc_id", "") or "").strip() or folder_name
+            chunk = slide_to_chunk(slide, doc_id, image_dir=folder_name)
             dst.write(json.dumps(chunk, ensure_ascii=False))
             dst.write("\n")
             count += 1
@@ -229,7 +224,7 @@ def chunk_deck(deck_dir: Path) -> Path:
     return out_path
 
 
-def _iter_deck_dirs(root: Path):
+def _iter_file_dirs(root: Path):
     for child in sorted(root.iterdir()):
         if child.is_dir() and (child / "slides.jsonl").exists():
             yield child
@@ -240,35 +235,35 @@ def parse_args() -> argparse.Namespace:
         description="Flatten per-deck slides.jsonl into retrieval-ready chunks.jsonl.",
     )
     g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--deck", type=Path, help="Path to a single deck directory containing slides.jsonl.")
+    g.add_argument("--file", type=Path, help="Path to a single file directory containing slides.jsonl.")
     g.add_argument(
         "--all",
-        dest="all_decks",
+        dest="all_files",
         action="store_true",
-        help="Re-chunk every deck under --decks-dir.",
+        help="Re-chunk every file directory under --files-dir.",
     )
     p.add_argument(
-        "--decks-dir",
+        "--files-dir",
         type=Path,
-        default=Path("output/decks"),
-        help="Root directory holding per-deck folders (only used with --all).",
+        default=Path("output/files"),
+        help="Root directory holding per-file folders (only used with --all).",
     )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.all_decks:
-        if not args.decks_dir.exists():
-            raise SystemExit(f"Decks dir not found: {args.decks_dir}")
-        decks = list(_iter_deck_dirs(args.decks_dir))
-        if not decks:
-            print(f"[chunk] no decks with slides.jsonl found under {args.decks_dir}")
+    if args.all_files:
+        if not args.files_dir.exists():
+            raise SystemExit(f"Files dir not found: {args.files_dir}")
+        dirs = list(_iter_file_dirs(args.files_dir))
+        if not dirs:
+            print(f"[chunk] no file directories with slides.jsonl found under {args.files_dir}")
             return
-        for deck in decks:
-            chunk_deck(deck)
+        for d in dirs:
+            chunk_file(d)
     else:
-        chunk_deck(args.deck)
+        chunk_file(args.file)
 
 
 if __name__ == "__main__":
