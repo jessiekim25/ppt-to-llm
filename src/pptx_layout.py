@@ -380,6 +380,79 @@ def slide_count(pptx_path: Path) -> int:
     return len(list(prs.slides))
 
 
+_PRESENTATIONML_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+
+def diagnose_slide_shapes(pptx_path: Path, slide_num: int) -> str:
+    """Return a multi-line dump of every shape on `slide_num`, showing the
+    signals my walker uses (shape_type, has_table, has_text_frame, plus
+    XML-descendant checks for <a:tbl> and <p:oleObj>). Use this when a
+    table isn't being extracted and you want to see why.
+    """
+    from xml.etree import ElementTree as _ET  # cheap local import
+
+    def _local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+    prs = Presentation(str(pptx_path))
+    slides = list(prs.slides)
+    if slide_num < 1 or slide_num > len(slides):
+        return f"slide {slide_num} out of range (1..{len(slides)})"
+
+    slide = slides[slide_num - 1]
+    out: list[str] = [f"=== slide {slide_num} of {len(slides)} — "
+                      f"{len(list(slide.shapes))} top-level shapes ==="]
+
+    def dump(shape, depth: int = 0) -> None:
+        pad = "  " * depth
+        tag = _local(shape.element.tag)
+        out.append(
+            f"{pad}- name={getattr(shape, 'name', '?')!r} "
+            f"shape_type={getattr(shape, 'shape_type', None)} "
+            f"element=<{tag}>"
+        )
+        out.append(
+            f"{pad}    has_table={getattr(shape, 'has_table', 'N/A')} "
+            f"has_text_frame={getattr(shape, 'has_text_frame', 'N/A')}"
+        )
+        try:
+            tbl = shape.element.find(f".//{{{_DRAWINGML_NS}}}tbl")
+            out.append(f"{pad}    descendant <a:tbl>: {'YES' if tbl is not None else 'no'}")
+        except Exception as e:
+            out.append(f"{pad}    <a:tbl> check errored: {e}")
+        try:
+            gd = shape.element.find(f".//{{{_DRAWINGML_NS}}}graphic/{{{_DRAWINGML_NS}}}graphicData")
+            if gd is not None:
+                out.append(f"{pad}    graphicData uri={gd.get('uri')!r}")
+        except Exception:
+            pass
+        try:
+            ole = shape.element.find(f".//{{{_PRESENTATIONML_NS}}}oleObj")
+            if ole is not None:
+                out.append(
+                    f"{pad}    contains <p:oleObj> (embedded object): prog={ole.get('progId')!r}"
+                )
+        except Exception:
+            pass
+        # Recurse into groups
+        try:
+            for child in getattr(shape, "shapes", []):
+                dump(child, depth + 1)
+        except Exception:
+            pass
+
+    for shape in slide.shapes:
+        dump(shape)
+
+    out.append("")
+    out.append("Legend:")
+    out.append("  has_table=True                     -> extracted natively")
+    out.append("  descendant <a:tbl>: YES            -> caught by XML fallback")
+    out.append("  contains <p:oleObj> ...            -> embedded Excel object; not extractable")
+    out.append("                                        (only a visual snapshot is stored)")
+    return "\n".join(out)
+
+
 def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:
     """Return the speaker-notes text for a 1-indexed slide, "" if none.
 

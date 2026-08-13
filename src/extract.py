@@ -14,6 +14,7 @@ from .llm import build_payload, extract_slide
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
 from .pptx_layout import (
+    diagnose_slide_shapes as diagnose_pptx_slide_shapes,
     extract_slide_layout as extract_pptx_slide_layout,
     extract_slide_notes as extract_pptx_slide_notes,
     slide_count as pptx_slide_count,
@@ -436,6 +437,17 @@ def parse_args() -> argparse.Namespace:
         help="Skip rendering per-slide PNGs. Useful for --pptx runs on machines "
         "without LibreOffice installed — you still get slides.jsonl/chunks.jsonl.",
     )
+    p.add_argument(
+        "--diagnose-shapes",
+        type=int,
+        default=0,
+        metavar="SLIDE_NUM",
+        help="With --pptx: print every shape on slide N (1-indexed) with the "
+        "signals the table extractor uses (has_table, descendant <a:tbl>, "
+        "graphicData uri, OLE embed) and exit. Nothing is written to disk. "
+        "Use this when a table isn't being detected to see exactly what "
+        "python-pptx sees for that slide.",
+    )
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
@@ -759,6 +771,12 @@ def main() -> None:
     # extension-sniffing was misrouting `--pptx some.zip` into the PDF path
     # and silently extracting the first .pdf inside.
     is_pptx = args.pptx is not None
+
+    if is_pptx and args.diagnose_shapes:
+        pptx_path = resolve_pptx_input(input_path, pick=args.pick)
+        print(diagnose_pptx_slide_shapes(pptx_path, args.diagnose_shapes))
+        return
+
     settings = get_settings()
 
     if is_pptx:
