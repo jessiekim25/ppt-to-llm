@@ -12,7 +12,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu
 
-from .pdf_layout import Figure, PageLayout, Table, TextLine
+from .pdf_layout import Figure, PageLayout, Table, TextLine, _extract_tables as _pdfplumber_tables
 
 
 def _emu_to_pct(v: int | None, total: int) -> float:
@@ -239,7 +239,9 @@ def _walk_shapes(
             _walk_shapes(shape.shapes, slide_w, slide_h, text_lines, tables, figures, counter)
             continue
 
-        if shape.has_table:
+        # `has_table` is only defined on graphic-frame shapes; getattr keeps
+        # non-graphic shapes from raising AttributeError on older python-pptx.
+        if getattr(shape, "has_table", False):
             tables.append(_table_to_model(shape, slide_w, slide_h))
             continue
 
@@ -248,13 +250,41 @@ def _walk_shapes(
             # Pictures don't carry text; skip further processing.
             continue
 
-        if shape.has_text_frame:
+        if getattr(shape, "has_text_frame", False):
             counter[0] += 1
             _text_frame_lines(shape, slide_w, slide_h, text_lines, counter[0])
 
 
-def extract_slide_layout(pptx_path: Path, slide_num: int) -> PageLayout:
-    """Extract text lines + tables + figure bboxes from a single 1-indexed slide."""
+def _table_iou(a: Table, b: Table) -> float:
+    ax0, ay0, ax1, ay1 = a.bbox_pct
+    bx0, by0, bx1, by1 = b.bbox_pct
+    ix0, iy0 = max(ax0, bx0), max(ay0, by0)
+    ix1, iy1 = min(ax1, bx1), min(ay1, by1)
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    a_area = max(0.0, (ax1 - ax0) * (ay1 - ay0))
+    b_area = max(0.0, (bx1 - bx0) * (by1 - by0))
+    union = a_area + b_area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def extract_slide_layout(
+    pptx_path: Path,
+    slide_num: int,
+    companion_pdf_path: Path | None = None,
+) -> PageLayout:
+    """Extract text lines + tables + figure bboxes from a single 1-indexed slide.
+
+    When `companion_pdf_path` is provided (the LibreOffice-rendered PDF the
+    pipeline already builds for slide images), we ALSO run pdfplumber's
+    ruled-line table detector against that page and merge any tables it
+    finds. This catches "drawn tables" — grids built by hand from text
+    boxes + rectangles — that python-pptx doesn't see as tables at all
+    because they aren't native pptx table shapes. Tables that overlap an
+    already-extracted native table by >=30% IoU are treated as duplicates
+    and dropped.
+    """
     prs = Presentation(str(pptx_path))
     slides = list(prs.slides)
     if slide_num < 1 or slide_num > len(slides):
@@ -269,6 +299,13 @@ def extract_slide_layout(pptx_path: Path, slide_num: int) -> PageLayout:
     figures: list[Figure] = []
 
     _walk_shapes(slide.shapes, slide_w, slide_h, text_lines, tables, figures, counter=[0])
+
+    # pdfplumber fallback: catch drawn-shape tables python-pptx misses.
+    if companion_pdf_path is not None:
+        for pt in _pdfplumber_tables(companion_pdf_path, slide_num):
+            if any(_table_iou(pt, nt) >= 0.3 for nt in tables):
+                continue
+            tables.append(pt)
 
     # Drop text lines that fall inside any detected table's bbox — the table
     # extractor is authoritative for those (mirrors pdf_layout behavior).
