@@ -771,12 +771,7 @@ def main() -> None:
         # runs on machines without LibreOffice.
         render_pdf_path = None if args.no_images else pptx_to_pdf(pptx_path, pptx_path.parent)
         total_slides = pptx_slide_count(pptx_path)
-        # Pass the companion PDF so extract_slide_layout can also run
-        # pdfplumber's ruled-line table detection — catches tables drawn
-        # from shapes/text boxes that python-pptx doesn't recognize.
-        extract_layout = lambda n: extract_pptx_slide_layout(
-            pptx_path, n, companion_pdf_path=render_pdf_path
-        )
+        extract_layout = lambda n: extract_pptx_slide_layout(pptx_path, n)
         llm_kind = "pptx"
     else:
         pdf_path = resolve_pdf_input(input_path)
