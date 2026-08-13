@@ -223,6 +223,70 @@ def _table_to_model(shape, slide_w: int, slide_h: int) -> Table:
     )
 
 
+_DRAWINGML_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+def _shape_has_table_xml(shape) -> bool:
+    """True if the shape's underlying XML contains a DrawingML <a:tbl>.
+
+    Some pptx files wrap tables inside placeholders or with non-standard
+    graphicData URIs, so python-pptx's shape.has_table returns False even
+    though the table is right there in the XML. This scans the element
+    tree directly. Group shapes are handled by the recursion in
+    _walk_shapes, so we never check them here.
+    """
+    try:
+        return shape.element.find(f".//{{{_DRAWINGML_NS}}}tbl") is not None
+    except Exception:
+        return False
+
+
+def _table_from_xml(shape, slide_w: int, slide_h: int) -> Table | None:
+    """Reconstruct a Table from the raw <a:tbl> XML inside `shape`.
+
+    Fallback for shapes where python-pptx doesn't expose .table but the
+    underlying pptx still holds a proper DrawingML table. Cells joined
+    via horizontal/vertical merge write empty strings for their
+    continuation cells (matches the shape of _table_to_model).
+    """
+    ns = f"{{{_DRAWINGML_NS}}}"
+    try:
+        tbl = shape.element.find(f".//{ns}tbl")
+    except Exception:
+        return None
+    if tbl is None:
+        return None
+
+    columns: list[str] = []
+    body_rows: list[list[str]] = []
+
+    for i, tr in enumerate(tbl.findall(f"{ns}tr")):
+        cells: list[str] = []
+        for tc in tr.findall(f"{ns}tc"):
+            # A merge continuation cell (hMerge="1" or vMerge="1") holds no
+            # text of its own — leave it empty so downstream renderers can
+            # decide whether to fill-down.
+            if tc.get("hMerge") == "1" or tc.get("vMerge") == "1":
+                cells.append("")
+                continue
+            # Concatenate every <a:t> under this cell as its text.
+            parts = [t.text or "" for t in tc.iter(f"{ns}t")]
+            cells.append(" ".join("".join(parts).split()))
+        if i == 0:
+            columns = cells
+        else:
+            body_rows.append(cells)
+
+    if not columns and not body_rows:
+        return None
+
+    return Table(
+        bbox_pct=_shape_bbox_pct(shape, slide_w, slide_h),
+        columns=columns,
+        rows=body_rows,
+    )
+
+
 def _walk_shapes(
     shapes,
     slide_w: int,
@@ -239,16 +303,26 @@ def _walk_shapes(
             _walk_shapes(shape.shapes, slide_w, slide_h, text_lines, tables, figures, counter)
             continue
 
-        if shape.has_table:
+        # Native pptx table (GraphicFrame with the standard table URI).
+        if getattr(shape, "has_table", False):
             tables.append(_table_to_model(shape, slide_w, slide_h))
             continue
+
+        # Fallback: a table whose XML wrapper doesn't match python-pptx's
+        # URI check (some exports/placeholders land here). Reconstruct the
+        # table from the raw <a:tbl> element and skip further processing.
+        if _shape_has_table_xml(shape):
+            xml_table = _table_from_xml(shape, slide_w, slide_h)
+            if xml_table is not None:
+                tables.append(xml_table)
+                continue
 
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             figures.append(Figure(bbox_pct=_shape_bbox_pct(shape, slide_w, slide_h)))
             # Pictures don't carry text; skip further processing.
             continue
 
-        if shape.has_text_frame:
+        if getattr(shape, "has_text_frame", False):
             counter[0] += 1
             _text_frame_lines(shape, slide_w, slide_h, text_lines, counter[0])
 
@@ -309,9 +383,12 @@ def slide_count(pptx_path: Path) -> int:
 def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:
     """Return the speaker-notes text for a 1-indexed slide, "" if none.
 
-    Notes live in slide.notes_slide.notes_text_frame; we join paragraphs
-    with newlines and collapse internal whitespace per paragraph so the
-    return value is drop-in for a `body` field.
+    Preserves the note's line structure: each paragraph is one line, blank
+    paragraphs stay as blank lines (so a note written as two prose blocks
+    separated by an empty line keeps that gap), and soft line breaks
+    inside a paragraph (Shift-Enter, DrawingML `<a:br/>` — python-pptx
+    exposes these as `\\v`) become real newlines. Only leading and
+    trailing blank lines are trimmed.
     """
     prs = Presentation(str(pptx_path))
     slides = list(prs.slides)
@@ -323,9 +400,16 @@ def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:
     tf = slide.notes_slide.notes_text_frame
     if tf is None:
         return ""
+
     lines: list[str] = []
     for para in tf.paragraphs:
-        text = " ".join((para.text or "").split())
-        if text:
-            lines.append(text)
-    return "\n".join(lines).strip()
+        raw = (para.text or "").replace("\v", "\n")
+        # Preserve internal spacing within each visual line; trim trailing whitespace.
+        for line in raw.split("\n"):
+            lines.append(line.rstrip())
+
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
