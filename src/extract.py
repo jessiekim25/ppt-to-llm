@@ -13,8 +13,11 @@ from .corpus import build_corpus
 from .llm import build_payload, extract_slide
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
-from .pptx_layout import extract_slide_layout as extract_pptx_slide_layout
-from .pptx_layout import slide_count as pptx_slide_count
+from .pptx_layout import (
+    extract_slide_layout as extract_pptx_slide_layout,
+    extract_slide_notes as extract_pptx_slide_notes,
+    slide_count as pptx_slide_count,
+)
 from .pptx_utils import pptx_to_pdf, resolve_pptx_input
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
@@ -159,29 +162,102 @@ def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
     return top_level
 
 
+# Groups wider than this fraction of the slide are treated as slide-wide
+# (titles, intro paragraphs, legends) and are NEVER clustered with columns.
+_COLUMN_MAX_WIDTH_FRAC = 0.6
+# Fraction of the smaller group's x-width that two groups must overlap on
+# to be considered part of the same visual column.
+_COLUMN_X_OVERLAP_MIN = 0.5
+# Maximum vertical gap between two groups (as a fraction of slide height)
+# for them to still count as one column. Stops a bottom-of-page legend that
+# happens to sit under column 1 from being absorbed into that column's body.
+_COLUMN_Y_GAP_MAX = 0.05
+
+
+def _cluster_columns_by_x(group_geom: dict[int, tuple[float, float, float, float]]) -> dict[int, int]:
+    """Union-find groups into column-clusters by x-overlap AND y-adjacency.
+
+    Slide-wide groups (width > _COLUMN_MAX_WIDTH_FRAC) never merge — they'd
+    otherwise pull an entire multi-column band into one cluster because
+    their x-range engulfs every column. Two groups also need to be
+    vertically adjacent (either overlapping in y or separated by less than
+    _COLUMN_Y_GAP_MAX of the slide height); this keeps a bottom-of-page
+    legend or footnote out of the column body directly above it even when
+    x-alignment matches. Returns {group_id: cluster_root_id}.
+    """
+    gids = list(group_geom.keys())
+    parent = {g: g for g in gids}
+
+    def find(g):
+        while parent[g] != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    def column_like(g):
+        x0, _, x1, _ = group_geom[g]
+        return (x1 - x0) <= _COLUMN_MAX_WIDTH_FRAC
+
+    for i, g1 in enumerate(gids):
+        if not column_like(g1):
+            continue
+        x0a, y0a, x1a, y1a = group_geom[g1]
+        wa = x1a - x0a
+        for g2 in gids[i + 1:]:
+            if not column_like(g2):
+                continue
+            x0b, y0b, x1b, y1b = group_geom[g2]
+            wb = x1b - x0b
+            overlap = max(0.0, min(x1a, x1b) - max(x0a, x0b))
+            min_w = min(wa, wb) or 1.0
+            if overlap / min_w < _COLUMN_X_OVERLAP_MIN:
+                continue
+            # y-adjacency: negative gap = they overlap in y (still cluster).
+            y_gap = max(y0a, y0b) - min(y1a, y1b)
+            if y_gap > _COLUMN_Y_GAP_MAX:
+                continue
+            union(g1, g2)
+
+    return {g: find(g) for g in gids}
+
+
 def _build_detail_from_pptx_groups(
     text_lines: list[TextLine],
     tables: list[Table],
     exclude_haystack: str,
+    slide_notes: str = "",
 ) -> list[dict]:
     """Deterministically build the per-slide `detail` tree from pptx text frames.
 
     The LLM is not asked to structure `detail` for pptx — every paragraph is
     already tagged with `group_id` (its source text frame) plus `bold`/`size`
     typography, which is enough to reconstruct subheader/body pairs and
-    parent/child nesting without any LLM guessing. Groups are ordered by
-    y-band then x so parallel columns (e.g. a 3-column roadmap) come out in
-    reading order.
+    parent/child nesting without any LLM guessing.
+
+    Text frames that share an x-range (>=50% overlap on the narrower one,
+    and each width <=60% of the slide) are first fused into a virtual
+    "column". This is what lets a Roadmap slide's three "Week X" heading
+    boxes each nest their own separately-boxed "KEY INITIATIVES + bullets"
+    frame beneath them, even though the heading and the body live in two
+    different text frames per column.
+
+    Slide-wide groups (titles, intro paragraphs, legends) never fuse — their
+    x-range engulfs every column and would collapse the whole band.
 
     `exclude_haystack` is a normalized string of slide-level values already
     emitted elsewhere on the record (currently `sub_section`); any paragraph
     whose normalized text is a substring of that haystack is dropped from
     detail to avoid duplication.
 
-    Tables from python-pptx's native extraction append as `{"table": ...}`
-    blocks at the end, matching the PDF path.
+    Tables append as `{"table": ...}` blocks. Speaker notes, when present,
+    are added as a final `{"subheader": "slide note", "body": ...}` block.
     """
-    if not text_lines and not tables:
+    if not text_lines and not tables and not slide_notes:
         return []
 
     groups: dict[int, list[TextLine]] = defaultdict(list)
@@ -191,27 +267,49 @@ def _build_detail_from_pptx_groups(
             continue
         groups[tl.group_id or 0].append(tl)
 
-    group_infos: list[dict] = []
-    for tls in groups.values():
+    group_geom: dict[int, tuple[float, float, float, float]] = {}
+    for gid, tls in groups.items():
+        x0 = min(t.bbox_pct[0] for t in tls)
+        y0 = min(t.bbox_pct[1] for t in tls)
+        x1 = max(t.bbox_pct[2] for t in tls)
+        y1 = max(t.bbox_pct[3] for t in tls)
+        group_geom[gid] = (x0, y0, x1, y1)
+
+    cluster_of = _cluster_columns_by_x(group_geom)
+
+    # Fuse all paragraphs from groups in the same column-cluster into one
+    # ordered stream and hand that to the block builder — this is what
+    # nests the "KEY INITIATIVES" text frame beneath its column's "Week X"
+    # heading frame.
+    columns: dict[int, list[TextLine]] = defaultdict(list)
+    for gid, tls in groups.items():
+        columns[cluster_of[gid]].extend(tls)
+
+    column_infos: list[dict] = []
+    for tls in columns.values():
         tls.sort(key=lambda t: (t.bbox_pct[1], t.bbox_pct[0]))
         blocks = _blocks_from_group_paragraphs(tls)
         if not blocks:
             continue
         y0 = min(t.bbox_pct[1] for t in tls)
         x0 = min(t.bbox_pct[0] for t in tls)
-        group_infos.append({"y0": y0, "x0": x0, "blocks": blocks})
+        column_infos.append({"y0": y0, "x0": x0, "blocks": blocks})
 
     # y-band to ~5% of page so parallel columns stay adjacent in output.
-    group_infos.sort(key=lambda g: (round(g["y0"] * 20), g["x0"]))
+    column_infos.sort(key=lambda g: (round(g["y0"] * 20), g["x0"]))
 
     result: list[dict] = []
-    for gi in group_infos:
-        result.extend(gi["blocks"])
+    for ci in column_infos:
+        result.extend(ci["blocks"])
 
     for t in tables:
         rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
         if rendered:
             result.append({"table": rendered})
+
+    notes = (slide_notes or "").strip()
+    if notes:
+        result.append({"subheader": "slide note", "body": notes})
 
     return result
 
@@ -733,8 +831,10 @@ def main() -> None:
                 record["is_section_intro"] = True
             else:
                 exclude_haystack = _normalize_for_match(record.get("sub_section", ""))
+                notes = extract_pptx_slide_notes(pptx_path, page_num)
                 new_detail = _build_detail_from_pptx_groups(
-                    layout.text_lines, layout.tables, exclude_haystack
+                    layout.text_lines, layout.tables, exclude_haystack,
+                    slide_notes=notes,
                 )
                 if new_detail:
                     record["detail"] = new_detail

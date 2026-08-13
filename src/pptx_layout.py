@@ -304,3 +304,28 @@ def extract_slide_layout(pptx_path: Path, slide_num: int) -> PageLayout:
 def slide_count(pptx_path: Path) -> int:
     prs = Presentation(str(pptx_path))
     return len(list(prs.slides))
+
+
+def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:
+    """Return the speaker-notes text for a 1-indexed slide, "" if none.
+
+    Notes live in slide.notes_slide.notes_text_frame; we join paragraphs
+    with newlines and collapse internal whitespace per paragraph so the
+    return value is drop-in for a `body` field.
+    """
+    prs = Presentation(str(pptx_path))
+    slides = list(prs.slides)
+    if slide_num < 1 or slide_num > len(slides):
+        return ""
+    slide = slides[slide_num - 1]
+    if not getattr(slide, "has_notes_slide", False):
+        return ""
+    tf = slide.notes_slide.notes_text_frame
+    if tf is None:
+        return ""
+    lines: list[str] = []
+    for para in tf.paragraphs:
+        text = " ".join((para.text or "").split())
+        if text:
+            lines.append(text)
+    return "\n".join(lines).strip()
