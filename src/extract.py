@@ -842,8 +842,17 @@ def main() -> None:
                 )
                 is_section_intro = False
                 data["is_section_intro"] = False
-                # Section value only comes from real intro slides; drop what the
-                # LLM put there so propagation doesn't carry a false section forward.
+                # The prompt tells the LLM to put the intro title in `section`
+                # and leave `sub_section` empty on intro slides. On a demoted
+                # content slide that same title is the slide's own title, so
+                # promote it to sub_section (only when sub_section is empty —
+                # if the LLM already gave one, keep it).
+                llm_section = str(data.get("section", "") or "").strip()
+                llm_sub_section = str(data.get("sub_section", "") or "").strip()
+                if llm_section and not llm_sub_section:
+                    data["sub_section"] = llm_section
+                # Section value only comes from real intro slides; clear the
+                # LLM's guess so propagation doesn't carry it forward.
                 data["section"] = ""
 
         data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
