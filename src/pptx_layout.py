@@ -64,47 +64,76 @@ def _resolve_bold(flag, font_name: str, para_flag=None, para_font: str = "") -> 
     return False
 
 
-def _paragraph_defaults(para) -> tuple[float | None, str, bool | None]:
-    """Return the paragraph-level (size_pt, font_name, bold_flag) defaults.
+def _paragraph_defaults(para):
+    """Return the paragraph-level (size_pt, font_name, bold_flag, underline_flag) defaults.
 
-    bold_flag is a tri-state (True/False/None) so callers can distinguish
-    "explicit False" from "inherit" when resolving run bold.
+    bold_flag and underline_flag are tri-states (True/False/None) so callers
+    can distinguish "explicit False" from "inherit" when resolving them for
+    a run.
     """
     para_font_name = para.font.name or ""
     para_bold_flag = para.font.bold  # True / False / None
+    para_underline_flag = getattr(para.font, "underline", None)
     para_size = None
     try:
         if para.font.size is not None:
             para_size = float(para.font.size.pt)
     except Exception:
         para_size = None
-    return para_size, para_font_name, para_bold_flag
+    return para_size, para_font_name, para_bold_flag, para_underline_flag
 
 
-def _paragraph_segments(para) -> list[tuple[str, float | None, str, bool]]:
-    """Split a paragraph into (text, size, font, bold) segments, one per
-    contiguous run of the same bold state.
+def _underline_to_bool(v) -> bool | None:
+    """python-pptx returns font.underline as True/False/None/enum. Coerce to
+    True (underlined), False (explicit no), or None (inherit)."""
+    if v is None or v is True or v is False:
+        return v
+    # Enum from pptx.enum.text.MSO_TEXT_UNDERLINE_TYPE — anything other
+    # than NONE means underlined.
+    name = getattr(v, "name", "")
+    if name == "NONE":
+        return False
+    return True
+
+
+def _resolve_underline(run_val, para_val) -> bool:
+    """Mirror _resolve_bold's logic for the underline flag."""
+    for v in (run_val, para_val):
+        b = _underline_to_bool(v)
+        if b is True:
+            return True
+        if b is False:
+            return False
+    return False
+
+
+def _paragraph_segments(para) -> list[tuple[str, float | None, str, bool, bool]]:
+    """Split a paragraph into (text, size, font, bold, underline) segments,
+    one per contiguous run of the same (bold, underline) state.
 
     A pptx paragraph like "**KEY INITIATIVES**: SIA rework" (only the first
     part bold) becomes TWO segments so downstream can turn the bold prefix
-    into a subheader and the non-bold tail into that subheader's body — the
-    previous first-run-wins style detection collapsed the whole paragraph
-    into one bold-or-not line and lost that split.
+    into a subheader and the non-bold tail into that subheader's body.
+    Underline is split the same way — an "Overview" heading that's bold+
+    underlined and followed by regular body text now produces two segments
+    with distinct emphasis, so the underlined-but-not-bold case still gets
+    picked up as a subheader downstream.
     """
-    para_size, para_font_name, para_bold_flag = _paragraph_defaults(para)
+    para_size, para_font_name, para_bold_flag, para_underline_flag = _paragraph_defaults(para)
 
-    segments: list[tuple[str, float | None, str, bool]] = []
+    segments: list[tuple[str, float | None, str, bool, bool]] = []
     cur_text_parts: list[str] = []
     cur_size: float | None = None
     cur_font: str = ""
     cur_bold: bool | None = None  # None until we see the first run
+    cur_underline: bool = False
 
     def flush():
         if not cur_text_parts:
             return
         text = " ".join("".join(cur_text_parts).split())
         if text:
-            segments.append((text, cur_size, cur_font, bool(cur_bold)))
+            segments.append((text, cur_size, cur_font, bool(cur_bold), bool(cur_underline)))
 
     for run in para.runs:
         text = run.text or ""
@@ -127,18 +156,23 @@ def _paragraph_segments(para) -> list[tuple[str, float | None, str, bool]]:
 
         run_font = run.font.name or para_font_name
         run_bold = _resolve_bold(run.font.bold, run_font, para_bold_flag, para_font_name)
+        run_underline = _resolve_underline(
+            getattr(run.font, "underline", None), para_underline_flag
+        )
 
         if cur_bold is None:
             cur_bold = run_bold
+            cur_underline = run_underline
             cur_size = run_size
             cur_font = run_font
             cur_text_parts.append(text)
-        elif run_bold == cur_bold:
+        elif (run_bold, run_underline) == (cur_bold, cur_underline):
             cur_text_parts.append(text)
         else:
             flush()
             cur_text_parts = [text]
             cur_bold = run_bold
+            cur_underline = run_underline
             cur_size = run_size
             cur_font = run_font
 
@@ -148,8 +182,11 @@ def _paragraph_segments(para) -> list[tuple[str, float | None, str, bool]]:
         # No runs at all — fall back to paragraph.text with paragraph-level style.
         text = " ".join((para.text or "").split())
         if text:
-            segments.append((text, para_size, para_font_name,
-                             _resolve_bold(para_bold_flag, para_font_name)))
+            segments.append((
+                text, para_size, para_font_name,
+                _resolve_bold(para_bold_flag, para_font_name),
+                _resolve_underline(para_underline_flag, None),
+            ))
     return segments
 
 
@@ -182,13 +219,13 @@ def _text_frame_lines(
     n = len(non_empty)
     slice_h = height / n if n else 0.0
 
-    last_seen: tuple[str, bool] | None = None
+    last_seen: tuple[str, bool, bool] | None = None
     for i, para in enumerate(non_empty):
         py0 = y0 + i * slice_h
         py1 = y0 + (i + 1) * slice_h if i < n - 1 else y1
         segments = _paragraph_segments(para)
-        for (seg_text, seg_size, seg_font, seg_bold) in segments:
-            key = (seg_text.lower(), seg_bold)
+        for (seg_text, seg_size, seg_font, seg_bold, seg_underline) in segments:
+            key = (seg_text.lower(), seg_bold, seg_underline)
             if key == last_seen:
                 continue
             last_seen = key
@@ -199,6 +236,7 @@ def _text_frame_lines(
                     size=seg_size,
                     font=seg_font,
                     bold=seg_bold,
+                    underline=seg_underline,
                     group_id=group_id,
                 )
             )

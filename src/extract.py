@@ -109,19 +109,22 @@ def _block_from_subheader(sh: dict) -> list[dict]:
 def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
     """Convert one text frame's paragraphs (sorted top-to-bottom) into blocks.
 
-    - Bold paragraph -> a subheader block.
-    - Non-bold paragraph -> body of the most recent subheader (or a plain body
-      block at top level if no subheader has been seen yet in this group).
-    - Nesting: if the group has more than one distinct bold `size`, a bold
-      paragraph strictly smaller than the max bold size becomes a child of
+    - Emphasized paragraph (bold OR underline) -> a subheader block.
+    - Non-emphasized paragraph -> body of the most recent subheader (or a
+      plain body block at top level if no subheader has been seen yet).
+    - Nesting: if the group has more than one distinct emphasized `size`, an
+      emphasized paragraph strictly smaller than the max becomes a child of
       the current parent — so a "KEY INITIATIVES" at 14pt nests under a
       "Week 9-14, March" at 20pt in the same text box.
     """
     if not tls:
         return []
 
-    bold_sizes = {tl.size for tl in tls if tl.bold and tl.size is not None}
-    parent_size = max(bold_sizes) if len(bold_sizes) >= 2 else None
+    def _emph(tl: TextLine) -> bool:
+        return tl.bold or tl.underline
+
+    emphasized_sizes = {tl.size for tl in tls if _emph(tl) and tl.size is not None}
+    parent_size = max(emphasized_sizes) if len(emphasized_sizes) >= 2 else None
 
     top_level: list[dict] = []
     current_parent: dict | None = None
@@ -131,7 +134,7 @@ def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
         text = tl.text.strip()
         if not text:
             continue
-        is_subheader = tl.bold and len(text.split()) <= 10
+        is_subheader = _emph(tl) and len(text.split()) <= 10
         if is_subheader:
             is_child = (
                 parent_size is not None
