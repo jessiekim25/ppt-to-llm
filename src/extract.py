@@ -821,6 +821,31 @@ def main() -> None:
             continue
 
         is_section_intro = bool(data.get("is_section_intro", False)) if is_pptx else False
+        # Geometric override for the LLM's is_section_intro claim. The LLM's
+        # payload doesn't include tables at all, so a table-heavy slide with
+        # just a title in text_lines looks "sparse" to it and gets mis-flagged
+        # as an intro — which would then wipe the whole detail (table included)
+        # and taint section-propagation for every following slide. Any of these
+        # signals means we're on a real content slide, not an intro:
+        #   - at least one detected table
+        #   - more than 4 text-line paragraphs after excluding the sub_section
+        if is_section_intro and is_pptx:
+            sub_section_norm = _normalize_for_match(str(data.get("sub_section", "") or ""))
+            non_title_lines = sum(
+                1 for tl in layout.text_lines
+                if _normalize_for_match(tl.text) and _normalize_for_match(tl.text) not in sub_section_norm
+            )
+            if layout.tables or non_title_lines > 4:
+                print(
+                    f"  ! overriding LLM is_section_intro=true on page {page_num}: "
+                    f"{len(layout.tables)} table(s), {non_title_lines} non-title text lines"
+                )
+                is_section_intro = False
+                data["is_section_intro"] = False
+                # Section value only comes from real intro slides; drop what the
+                # LLM put there so propagation doesn't carry a false section forward.
+                data["section"] = ""
+
         data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
 
         if args.no_images or render_pdf_path is None:
