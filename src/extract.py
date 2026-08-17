@@ -267,7 +267,13 @@ def _build_detail_from_pptx_groups(
     groups: dict[int, list[TextLine]] = defaultdict(list)
     for tl in text_lines:
         norm = _normalize_for_match(tl.text)
-        if norm and exclude_haystack and norm in exclude_haystack:
+        # Exclude only when the paragraph IS the sub_section (whole-string
+        # equality), not when it's a substring of it. Previously a slide
+        # title like "July highlights & challenges" would silently drop
+        # every downstream subheader named "Highlights" or "Challenges" —
+        # `"highlights"` is a substring of the title, so the whole
+        # subheader disappeared before block-building ever ran.
+        if norm and exclude_haystack and norm == exclude_haystack:
             continue
         groups[tl.group_id or 0].append(tl)
 
