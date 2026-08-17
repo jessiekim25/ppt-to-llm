@@ -483,15 +483,63 @@ def diagnose_slide_shapes(pptx_path: Path, slide_num: int) -> str:
         dump(shape)
 
     # Now actually run the extractor on this slide so we can see whether a
-    # detected table survives all the way to the final `detail` list.
+    # detected table survives all the way to the final `detail` list, and
+    # what emphasis flags (bold/underline/size) each paragraph gets.
     layout = extract_slide_layout(pptx_path, slide_num)
     out.append("")
     out.append(f"=== extract_slide_layout result: "
                f"{len(layout.text_lines)} text_lines, {len(layout.tables)} tables ===")
+    for i, tl in enumerate(layout.text_lines):
+        out.append(
+            f"  text_line {i}: group={tl.group_id} "
+            f"bold={tl.bold} underline={tl.underline} size={tl.size} "
+            f"text={tl.text!r}"
+        )
     for i, t in enumerate(layout.tables):
         out.append(f"  table {i}: columns={t.columns}")
         for r_i, row in enumerate(t.rows):
             out.append(f"    row {r_i}: {row}")
+
+    # Also dump the raw underline value python-pptx reports for each run in
+    # each text-frame shape. If our resolver reads False on a paragraph you
+    # see as underlined in PowerPoint, this row tells us whether that's
+    # because run.font.underline came back None (inherited from theme, not
+    # exposed) versus explicitly False.
+    out.append("")
+    out.append("=== raw run styling per text-frame shape ===")
+
+    def dump_runs(shape, depth=0):
+        pad = "  " * depth
+        if getattr(shape, "shape_type", None) is not None and \
+                shape.shape_type.name == "GROUP":
+            for child in getattr(shape, "shapes", []):
+                dump_runs(child, depth + 1)
+            return
+        if not getattr(shape, "has_text_frame", False):
+            return
+        out.append(f"{pad}shape name={getattr(shape, 'name', '?')!r}")
+        for pi, para in enumerate(shape.text_frame.paragraphs):
+            para_ptext = (para.text or "").strip()
+            if not para_ptext:
+                continue
+            out.append(
+                f"{pad}  para {pi} para.font.bold={para.font.bold!r} "
+                f"para.font.underline={getattr(para.font, 'underline', None)!r} "
+                f"text={para_ptext!r}"
+            )
+            for ri, run in enumerate(para.runs):
+                rtxt = run.text or ""
+                out.append(
+                    f"{pad}    run {ri} "
+                    f"bold={run.font.bold!r} "
+                    f"underline={getattr(run.font, 'underline', None)!r} "
+                    f"size={run.font.size!r} "
+                    f"font={run.font.name!r} "
+                    f"text={rtxt!r}"
+                )
+
+    for shape in slide.shapes:
+        dump_runs(shape)
 
     out.append("")
     out.append("Legend:")
