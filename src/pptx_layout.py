@@ -444,12 +444,28 @@ def diagnose_slide_shapes(pptx_path: Path, slide_num: int) -> str:
     for shape in slide.shapes:
         dump(shape)
 
+    # Now actually run the extractor on this slide so we can see whether a
+    # detected table survives all the way to the final `detail` list.
+    layout = extract_slide_layout(pptx_path, slide_num)
+    out.append("")
+    out.append(f"=== extract_slide_layout result: "
+               f"{len(layout.text_lines)} text_lines, {len(layout.tables)} tables ===")
+    for i, t in enumerate(layout.tables):
+        out.append(f"  table {i}: columns={t.columns}")
+        for r_i, row in enumerate(t.rows):
+            out.append(f"    row {r_i}: {row}")
+
     out.append("")
     out.append("Legend:")
     out.append("  has_table=True                     -> extracted natively")
     out.append("  descendant <a:tbl>: YES            -> caught by XML fallback")
     out.append("  contains <p:oleObj> ...            -> embedded Excel object; not extractable")
     out.append("                                        (only a visual snapshot is stored)")
+    out.append("")
+    out.append("If a table shows up under 'shapes' but NOT under 'extract_slide_layout")
+    out.append("result', the shape-walker is silently dropping it. If a table shows up")
+    out.append("in both but not in slides.jsonl, the downstream detail builder / dedupe")
+    out.append("step is dropping it — paste your slides.jsonl entry for this slide.")
     return "\n".join(out)
 
 
