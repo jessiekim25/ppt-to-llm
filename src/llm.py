@@ -295,6 +295,54 @@ Content fields:
 Return ONLY the JSON object. No prose, no code fences."""
 
 
+VISION_PROMPT = """You are reading a single pptx slide rendered as an image. The slide has almost no extractable text via the file's structure, so any content you can convey has to come from the image itself.
+
+Return a JSON object with these fields (all strings, empty string if not present):
+  {
+    "sub_section": "<the slide's main heading / title as printed on the slide>",
+    "body": "<every other piece of text visible on the slide, in reading order, joined with newlines>",
+    "figure_description": "<one short factual sentence describing what the picture depicts — ONLY when the slide is dominated by a photo/illustration with little or no text; otherwise leave empty>"
+  }
+
+Rules:
+- Read every piece of text visible in the image. Preserve line breaks between visually separate items in `body` — one item per line.
+- `sub_section` is the largest / topmost heading on the slide. If the slide has no obvious title, leave it "".
+- `figure_description` is a fallback for photo-only slides so the record isn't empty. If the slide already carries text you captured in `sub_section` or `body`, leave `figure_description` empty.
+- Return ONLY the JSON object. No prose, no code fences."""
+
+
+def _b64_image(image_path) -> str:
+    import base64
+    from pathlib import Path
+    data = Path(image_path).read_bytes()
+    return base64.b64encode(data).decode("ascii")
+
+
+def extract_slide_from_image(client: OpenAI, model: str, image_path) -> dict:
+    """Vision fallback for image-only slides: send the rendered slide PNG to
+    the LLM and get back sub_section + body text scraped from the image."""
+    b64 = _b64_image(image_path)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": VISION_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract sub_section, body, and figure_description from this slide."},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ],
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return json.loads(response.choices[0].message.content)
+
+
 def extract_slide(client: OpenAI, model: str, payload: dict, kind: str = "pdf") -> dict:
     """Call the LLM with the prompt appropriate for the input kind ('pdf' or 'pptx')."""
     system_prompt = SYSTEM_PROMPT_PPTX if kind == "pptx" else SYSTEM_PROMPT

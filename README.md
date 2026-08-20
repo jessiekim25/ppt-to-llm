@@ -142,6 +142,8 @@ sudo apt-get install libreoffice
 
 Only need the JSON output right now and don't want to install LibreOffice? Pass `--no-images` on the `--pptx` command to skip the render step — `slides.jsonl` and `chunks.jsonl` are still produced.
 
+**Image-only slides.** When a `--pptx` slide is essentially a single picture with no extractable text (a screenshot, a chart image, a product shot), the deterministic detail builder can't produce anything. In that case the pipeline sends the rendered slide PNG to the same OpenAI model as a vision fallback and asks it to read `sub_section` + body text off of the image itself. The fallback fires when the slide has ≥1 picture shape and ≤1 non-title text line, and only when a rendered PNG exists (i.e. not under `--no-images`). Disable with `--no-vision` if you want to skip the extra API cost.
+
 The OpenAI key lives in **AWS Secrets Manager** — nothing sensitive touches the repo or `.env`:
 
 | secret name | required keys                                              |

@@ -10,7 +10,7 @@ from shared.settings import get_settings
 
 from .chunk import chunk_file
 from .corpus import build_corpus
-from .llm import build_payload, extract_slide
+from .llm import build_payload, extract_slide, extract_slide_from_image
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
 from .pptx_layout import (
@@ -445,6 +445,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip rendering per-slide PNGs. Useful for --pptx runs on machines "
         "without LibreOffice installed — you still get slides.jsonl/chunks.jsonl.",
+    )
+    p.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="Skip the vision-LLM fallback that reads text off of image-only "
+        "pptx slides (slides with a picture and essentially no extractable text). "
+        "Vision calls use the same model and API key as the text extraction.",
     )
     p.add_argument(
         "--diagnose-shapes",
@@ -897,6 +904,49 @@ def main() -> None:
                     layout.text_lines, layout.tables, exclude_haystack,
                     slide_notes=notes,
                 )
+                # Vision fallback for image-only slides: the deterministic
+                # builder needs typography (bold/underline/size) to work, so
+                # a slide whose content is a single picture with no
+                # meaningful text lines produces empty detail. Ask the LLM
+                # to read the rendered PNG directly and give us sub_section
+                # + body scraped from the image itself.
+                _non_title_text_lines = sum(
+                    1 for tl in layout.text_lines
+                    if _normalize_for_match(tl.text)
+                    and _normalize_for_match(tl.text) != exclude_haystack
+                )
+                needs_vision = (
+                    not args.no_vision
+                    and slide_image_name
+                    and layout.figures
+                    and _non_title_text_lines <= 1
+                )
+                if needs_vision:
+                    image_path = per_file_dir / slide_image_name
+                    try:
+                        print(f"  [vision] image-only slide detected on page {page_num}; asking LLM")
+                        vdata = extract_slide_from_image(
+                            client, settings.openai_model, image_path
+                        )
+                    except Exception as e:
+                        print(f"  ! vision fallback failed on page {page_num}: {e}")
+                        vdata = {}
+                    v_sub = str(vdata.get("sub_section", "") or "").strip()
+                    v_body = str(vdata.get("body", "") or "").strip()
+                    v_fig = str(vdata.get("figure_description", "") or "").strip()
+                    # Only promote fields the deterministic path left empty
+                    # so we don't overwrite a good sub_section from the LLM
+                    # text pass with a vision guess.
+                    if v_sub and not record.get("sub_section"):
+                        record["sub_section"] = v_sub
+                    v_blocks: list[dict] = []
+                    if v_body:
+                        v_blocks.append({"body": v_body})
+                    if v_fig:
+                        v_blocks.append({"subheader": "figure description", "body": v_fig})
+                    if v_blocks:
+                        new_detail = (new_detail or []) + v_blocks
+
                 if new_detail:
                     record["detail"] = new_detail
                 else:
