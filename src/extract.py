@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+from collections import defaultdict
 from pathlib import Path
 
 from openai import OpenAI
@@ -9,9 +10,16 @@ from shared.settings import get_settings
 
 from .chunk import chunk_file
 from .corpus import build_corpus
-from .llm import build_payload, extract_slide
+from .llm import build_payload, extract_slide, extract_slide_from_image
 from .pdf_layout import Table, TextLine, extract_page_layout
 from .pdf_utils import page_count, render_page, resolve_pdf_input
+from .pptx_layout import (
+    diagnose_slide_shapes as diagnose_pptx_slide_shapes,
+    extract_slide_layout as extract_pptx_slide_layout,
+    extract_slide_notes as extract_pptx_slide_notes,
+    slide_count as pptx_slide_count,
+)
+from .pptx_utils import pptx_to_pdf, resolve_pptx_input
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
 
@@ -98,6 +106,224 @@ def _block_from_subheader(sh: dict) -> list[dict]:
     return [block] if block else []
 
 
+def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
+    """Convert one text frame's paragraphs (sorted top-to-bottom) into blocks.
+
+    - Emphasized paragraph (bold OR underline) -> a subheader block.
+    - Non-emphasized paragraph -> body of the most recent subheader (or a
+      plain body block at top level if no subheader has been seen yet).
+    - Nesting: if the group has more than one distinct emphasized `size`, an
+      emphasized paragraph strictly smaller than the max becomes a child of
+      the current parent — so a "KEY INITIATIVES" at 14pt nests under a
+      "Week 9-14, March" at 20pt in the same text box.
+    """
+    if not tls:
+        return []
+
+    def _emph(tl: TextLine) -> bool:
+        return tl.bold or tl.underline
+
+    emphasized_sizes = {tl.size for tl in tls if _emph(tl) and tl.size is not None}
+    parent_size = max(emphasized_sizes) if len(emphasized_sizes) >= 2 else None
+
+    top_level: list[dict] = []
+    current_parent: dict | None = None
+    current_child: dict | None = None
+
+    for tl in tls:
+        text = tl.text.strip()
+        if not text:
+            continue
+        is_subheader = _emph(tl) and len(text.split()) <= 10
+        if is_subheader:
+            is_child = (
+                parent_size is not None
+                and tl.size is not None
+                and tl.size < parent_size
+                and current_parent is not None
+            )
+            if is_child:
+                current_child = {"subheader": text}
+                current_parent.setdefault("children", []).append(current_child)
+            else:
+                current_parent = {"subheader": text}
+                current_child = None
+                top_level.append(current_parent)
+        else:
+            target = current_child if current_child is not None else current_parent
+            if target is None:
+                # Extend a preceding standalone-body block instead of starting a
+                # new one so a group of consecutive non-bold paragraphs (e.g. a
+                # legend: BACKLOG / UX/BUILD/QA / LIVE/DONE) stays as one body.
+                if top_level and set(top_level[-1].keys()) == {"body"}:
+                    top_level[-1]["body"] += f"\n{text}"
+                else:
+                    top_level.append({"body": text})
+            else:
+                existing = target.get("body", "")
+                target["body"] = f"{existing}\n{text}" if existing else text
+
+    return top_level
+
+
+# Groups wider than this fraction of the slide are treated as slide-wide
+# (titles, intro paragraphs, legends) and are NEVER clustered with columns.
+_COLUMN_MAX_WIDTH_FRAC = 0.6
+# Fraction of the smaller group's x-width that two groups must overlap on
+# to be considered part of the same visual column.
+_COLUMN_X_OVERLAP_MIN = 0.5
+# Maximum vertical gap between two groups (as a fraction of slide height)
+# for them to still count as one column. Stops a bottom-of-page legend that
+# happens to sit under column 1 from being absorbed into that column's body.
+_COLUMN_Y_GAP_MAX = 0.05
+
+
+def _cluster_columns_by_x(group_geom: dict[int, tuple[float, float, float, float]]) -> dict[int, int]:
+    """Union-find groups into column-clusters by x-overlap AND y-adjacency.
+
+    Slide-wide groups (width > _COLUMN_MAX_WIDTH_FRAC) never merge — they'd
+    otherwise pull an entire multi-column band into one cluster because
+    their x-range engulfs every column. Two groups also need to be
+    vertically adjacent (either overlapping in y or separated by less than
+    _COLUMN_Y_GAP_MAX of the slide height); this keeps a bottom-of-page
+    legend or footnote out of the column body directly above it even when
+    x-alignment matches. Returns {group_id: cluster_root_id}.
+    """
+    gids = list(group_geom.keys())
+    parent = {g: g for g in gids}
+
+    def find(g):
+        while parent[g] != g:
+            parent[g] = parent[parent[g]]
+            g = parent[g]
+        return g
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    def column_like(g):
+        x0, _, x1, _ = group_geom[g]
+        return (x1 - x0) <= _COLUMN_MAX_WIDTH_FRAC
+
+    for i, g1 in enumerate(gids):
+        if not column_like(g1):
+            continue
+        x0a, y0a, x1a, y1a = group_geom[g1]
+        wa = x1a - x0a
+        for g2 in gids[i + 1:]:
+            if not column_like(g2):
+                continue
+            x0b, y0b, x1b, y1b = group_geom[g2]
+            wb = x1b - x0b
+            overlap = max(0.0, min(x1a, x1b) - max(x0a, x0b))
+            min_w = min(wa, wb) or 1.0
+            if overlap / min_w < _COLUMN_X_OVERLAP_MIN:
+                continue
+            # y-adjacency: negative gap = they overlap in y (still cluster).
+            y_gap = max(y0a, y0b) - min(y1a, y1b)
+            if y_gap > _COLUMN_Y_GAP_MAX:
+                continue
+            union(g1, g2)
+
+    return {g: find(g) for g in gids}
+
+
+def _build_detail_from_pptx_groups(
+    text_lines: list[TextLine],
+    tables: list[Table],
+    exclude_haystack: str,
+    slide_notes: str = "",
+) -> list[dict]:
+    """Deterministically build the per-slide `detail` tree from pptx text frames.
+
+    The LLM is not asked to structure `detail` for pptx — every paragraph is
+    already tagged with `group_id` (its source text frame) plus `bold`/`size`
+    typography, which is enough to reconstruct subheader/body pairs and
+    parent/child nesting without any LLM guessing.
+
+    Text frames that share an x-range (>=50% overlap on the narrower one,
+    and each width <=60% of the slide) are first fused into a virtual
+    "column". This is what lets a Roadmap slide's three "Week X" heading
+    boxes each nest their own separately-boxed "KEY INITIATIVES + bullets"
+    frame beneath them, even though the heading and the body live in two
+    different text frames per column.
+
+    Slide-wide groups (titles, intro paragraphs, legends) never fuse — their
+    x-range engulfs every column and would collapse the whole band.
+
+    `exclude_haystack` is a normalized string of slide-level values already
+    emitted elsewhere on the record (currently `sub_section`); any paragraph
+    whose normalized text is a substring of that haystack is dropped from
+    detail to avoid duplication.
+
+    Tables append as `{"table": ...}` blocks. Speaker notes, when present,
+    are added as a final `{"subheader": "slide note", "body": ...}` block.
+    """
+    if not text_lines and not tables and not slide_notes:
+        return []
+
+    groups: dict[int, list[TextLine]] = defaultdict(list)
+    for tl in text_lines:
+        norm = _normalize_for_match(tl.text)
+        # Exclude only when the paragraph IS the sub_section (whole-string
+        # equality), not when it's a substring of it. Previously a slide
+        # title like "July highlights & challenges" would silently drop
+        # every downstream subheader named "Highlights" or "Challenges" —
+        # `"highlights"` is a substring of the title, so the whole
+        # subheader disappeared before block-building ever ran.
+        if norm and exclude_haystack and norm == exclude_haystack:
+            continue
+        groups[tl.group_id or 0].append(tl)
+
+    group_geom: dict[int, tuple[float, float, float, float]] = {}
+    for gid, tls in groups.items():
+        x0 = min(t.bbox_pct[0] for t in tls)
+        y0 = min(t.bbox_pct[1] for t in tls)
+        x1 = max(t.bbox_pct[2] for t in tls)
+        y1 = max(t.bbox_pct[3] for t in tls)
+        group_geom[gid] = (x0, y0, x1, y1)
+
+    cluster_of = _cluster_columns_by_x(group_geom)
+
+    # Fuse all paragraphs from groups in the same column-cluster into one
+    # ordered stream and hand that to the block builder — this is what
+    # nests the "KEY INITIATIVES" text frame beneath its column's "Week X"
+    # heading frame.
+    columns: dict[int, list[TextLine]] = defaultdict(list)
+    for gid, tls in groups.items():
+        columns[cluster_of[gid]].extend(tls)
+
+    column_infos: list[dict] = []
+    for tls in columns.values():
+        tls.sort(key=lambda t: (t.bbox_pct[1], t.bbox_pct[0]))
+        blocks = _blocks_from_group_paragraphs(tls)
+        if not blocks:
+            continue
+        y0 = min(t.bbox_pct[1] for t in tls)
+        x0 = min(t.bbox_pct[0] for t in tls)
+        column_infos.append({"y0": y0, "x0": x0, "blocks": blocks})
+
+    # y-band to ~5% of page so parallel columns stay adjacent in output.
+    column_infos.sort(key=lambda g: (round(g["y0"] * 20), g["x0"]))
+
+    result: list[dict] = []
+    for ci in column_infos:
+        result.extend(ci["blocks"])
+
+    for t in tables:
+        rendered = _render_table({"columns": t.columns, "rows": t.rows}).strip()
+        if rendered:
+            result.append({"table": rendered})
+
+    notes = (slide_notes or "").strip()
+    if notes:
+        result.append({"subheader": "slide note", "body": notes})
+
+    return result
+
+
 def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
     """Return the slide's text hierarchy as a list of blocks in reading order.
 
@@ -165,19 +391,32 @@ def build_slide_record(
     record.update(fields)
     if detail:
         record["detail"] = detail
-    record["slide_image_path"] = slide_image_name
+    if slide_image_name:
+        record["slide_image_path"] = slide_image_name
     return record
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Convert a campaign visual guideline PDF into per-slide JSON records for LLM retrieval.",
+        description="Convert a PDF or PPTX deck into per-slide JSON records for LLM retrieval.",
+    )
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "--pdf",
+        type=Path,
+        help="Path to a PDF, or to a .zip containing one (extracted automatically).",
+    )
+    src.add_argument(
+        "--pptx",
+        type=Path,
+        help="Path to a .pptx, or to a .zip containing one or more (extracted automatically).",
     )
     p.add_argument(
-        "--pdf",
-        required=True,
-        type=Path,
-        help="Path to the guideline PDF, or to a .zip containing one (extracted automatically).",
+        "--pick",
+        default="",
+        help="With --pptx pointing at a multi-file .zip, substring of the .pptx filename to extract "
+        "(case-insensitive; must match exactly one). Ignored when the zip has a single .pptx or "
+        "when --pptx points at a bare .pptx.",
     )
     p.add_argument(
         "--output-dir",
@@ -201,6 +440,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip rebuilding the combined corpus file after extraction.",
     )
+    p.add_argument(
+        "--no-images",
+        action="store_true",
+        help="Skip rendering per-slide PNGs. Useful for --pptx runs on machines "
+        "without LibreOffice installed — you still get slides.jsonl/chunks.jsonl.",
+    )
+    p.add_argument(
+        "--no-vision",
+        action="store_true",
+        help="Skip the vision-LLM fallback that reads text off of image-only "
+        "pptx slides (slides with a picture and essentially no extractable text). "
+        "Vision calls use the same model and API key as the text extraction.",
+    )
+    p.add_argument(
+        "--diagnose-shapes",
+        type=int,
+        default=0,
+        metavar="SLIDE_NUM",
+        help="With --pptx: print every shape on slide N (1-indexed) with the "
+        "signals the table extractor uses (has_table, descendant <a:tbl>, "
+        "graphicData uri, OLE embed) and exit. Nothing is written to disk. "
+        "Use this when a table isn't being detected to see exactly what "
+        "python-pptx sees for that slide.",
+    )
     p.add_argument("--product", default="", help="Fallback product/series when not visible on a slide.")
     p.add_argument("--dpi", type=int, default=150, help="Render DPI for slide screenshots.")
     p.add_argument("--limit", type=int, default=0, help="Only process the first N slides (0 = all).")
@@ -217,8 +480,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _resolve_page_nums(pdf_path: Path, pages: set[int] | None, limit: int) -> list[int]:
-    total = page_count(pdf_path)
+def _resolve_page_nums(total: int, pages: set[int] | None, limit: int) -> list[int]:
     if pages:
         return sorted(p for p in pages if 1 <= p <= total)
     nums = list(range(1, total + 1))
@@ -229,8 +491,8 @@ def _backfill_sections(records: list[dict]) -> None:
     """Slides without an explicit `section` inherit the last non-empty one seen.
 
     Section indicators sit in the top-left corner of nearly every slide in a
-    deck but the LLM sometimes misses them. Sections rarely change mid-deck,
-    so carrying the last seen value forward fills the gaps correctly.
+    guideline deck but the LLM sometimes misses them. Sections rarely change
+    mid-deck, so carrying the last seen value forward fills the gaps correctly.
     """
     last = ""
     for r in records:
@@ -239,6 +501,64 @@ def _backfill_sections(records: list[dict]) -> None:
             last = current
         elif last:
             r["section"] = last
+
+
+def _propagate_sections_from_intros(records: list[dict]) -> None:
+    """PPTX section rule: each section starts with an intro slide whose sole
+    purpose is naming a new section (e.g. a "Roadmap" or "March review" cover
+    slide). Every subsequent slide belongs to that section until the next
+    intro slide.
+
+    Content slides ALWAYS take their `section` from the last-seen intro,
+    overwriting whatever the LLM may have put there — the intro-driven
+    pattern is authoritative and any per-slide LLM guess (often derived
+    from a subtly-styled watermark or footer) is noise that would break
+    the pattern.
+
+    If a content slide precedes the first intro, its `section` is cleared
+    so downstream doesn't see a stray value.
+    """
+    current = ""
+    for r in records:
+        if r.pop("is_section_intro", False):
+            intro_section = r.get("section", "").strip()
+            if intro_section:
+                current = intro_section
+        else:
+            r.pop("is_section_intro", None)
+            if current:
+                r["section"] = current
+            elif "section" in r:
+                del r["section"]
+
+
+_RECORD_KEY_ORDER = (
+    "slide_id",
+    "doc_id",
+    "product",
+    "section",
+    "sub_section",
+    "model",
+    "detail",
+    "slide_image_path",
+)
+
+
+def _reorder_record(record: dict) -> dict:
+    """Return a new dict with keys in the canonical output order.
+
+    Necessary because fields like `section` can be set (or overwritten) by
+    post-processing after `build_slide_record` returned, which puts them at
+    the END of the dict — dict insertion order is what the JSON writer emits.
+    """
+    ordered: dict = {}
+    for k in _RECORD_KEY_ORDER:
+        if k in record:
+            ordered[k] = record[k]
+    for k, v in record.items():
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
 
 
 def _normalize_for_match(s: str) -> str:
@@ -458,39 +778,107 @@ def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
 def main() -> None:
     args = parse_args()
 
-    if not args.pdf.exists():
-        raise SystemExit(f"Input not found: {args.pdf}")
+    input_path: Path = args.pptx if args.pptx is not None else args.pdf
+    if not input_path.exists():
+        raise SystemExit(f"Input not found: {input_path}")
 
-    pdf_path = resolve_pdf_input(args.pdf)
+    # Which flag was used is authoritative — the file's extension is not.
+    # A pptx-carrying zip is usually named "*.zip", not "*.pptx.zip", so
+    # extension-sniffing was misrouting `--pptx some.zip` into the PDF path
+    # and silently extracting the first .pdf inside.
+    is_pptx = args.pptx is not None
+
+    if is_pptx and args.diagnose_shapes:
+        pptx_path = resolve_pptx_input(input_path, pick=args.pick)
+        print(diagnose_pptx_slide_shapes(pptx_path, args.diagnose_shapes))
+        return
+
     settings = get_settings()
 
-    pages = parse_pages(args.pages) if args.pages else None
-    page_nums = _resolve_page_nums(pdf_path, pages, args.limit)
+    if is_pptx:
+        pptx_path = resolve_pptx_input(input_path, pick=args.pick)
+        source_stem = pptx_path.stem
+        per_file_dir = args.output_dir / source_stem
+        per_file_dir.mkdir(parents=True, exist_ok=True)
+        # Companion PDF is only needed for rendering per-slide PNGs. Skip the
+        # LibreOffice call entirely when --no-images is set so the pipeline
+        # runs on machines without LibreOffice.
+        render_pdf_path = None if args.no_images else pptx_to_pdf(pptx_path, pptx_path.parent)
+        total_slides = pptx_slide_count(pptx_path)
+        extract_layout = lambda n: extract_pptx_slide_layout(pptx_path, n)
+        llm_kind = "pptx"
+    else:
+        pdf_path = resolve_pdf_input(input_path)
+        source_stem = pdf_path.stem
+        per_file_dir = args.output_dir / source_stem
+        per_file_dir.mkdir(parents=True, exist_ok=True)
+        render_pdf_path = pdf_path
+        total_slides = page_count(pdf_path)
+        extract_layout = lambda n: extract_page_layout(pdf_path, n)
+        llm_kind = "pdf"
 
-    per_file_dir = args.output_dir / pdf_path.stem
-    per_file_dir.mkdir(parents=True, exist_ok=True)
+    pages = parse_pages(args.pages) if args.pages else None
+    page_nums = _resolve_page_nums(total_slides, pages, args.limit)
 
     client = OpenAI(api_key=settings.openai_api_key)
     defaults = {"product": args.product}
-    doc_id = _slug(pdf_path.stem)
+    doc_id = _slug(source_stem)
 
     records: list[dict] = []
     text_lines_by_slide: dict[str, list[TextLine]] = {}
     for i, page_num in enumerate(page_nums, start=1):
         print(f"[extract] slide {i}/{len(page_nums)}: page {page_num}")
         try:
-            layout = extract_page_layout(pdf_path, page_num)
+            layout = extract_layout(page_num)
             payload = build_payload(layout, page_num)
-            data = extract_slide(client, settings.openai_model, payload)
+            data = extract_slide(client, settings.openai_model, payload, kind=llm_kind)
         except Exception as e:  # keep going even if one slide fails
             print(f"  ! extraction failed: {e}")
             continue
 
+        is_section_intro = bool(data.get("is_section_intro", False)) if is_pptx else False
+        # Geometric override for the LLM's is_section_intro claim. The LLM's
+        # payload doesn't include tables at all, so a table-heavy slide with
+        # just a title in text_lines looks "sparse" to it and gets mis-flagged
+        # as an intro — which would then wipe the whole detail (table included)
+        # and taint section-propagation for every following slide. Any of these
+        # signals means we're on a real content slide, not an intro:
+        #   - at least one detected table
+        #   - more than 4 text-line paragraphs after excluding the sub_section
+        if is_section_intro and is_pptx:
+            sub_section_norm = _normalize_for_match(str(data.get("sub_section", "") or ""))
+            non_title_lines = sum(
+                1 for tl in layout.text_lines
+                if _normalize_for_match(tl.text) and _normalize_for_match(tl.text) not in sub_section_norm
+            )
+            if layout.tables or non_title_lines > 4:
+                print(
+                    f"  ! overriding LLM is_section_intro=true on page {page_num}: "
+                    f"{len(layout.tables)} table(s), {non_title_lines} non-title text lines"
+                )
+                is_section_intro = False
+                data["is_section_intro"] = False
+                # The prompt tells the LLM to put the intro title in `section`
+                # and leave `sub_section` empty on intro slides. On a demoted
+                # content slide that same title is the slide's own title, so
+                # promote it to sub_section (only when sub_section is empty —
+                # if the LLM already gave one, keep it).
+                llm_section = str(data.get("section", "") or "").strip()
+                llm_sub_section = str(data.get("sub_section", "") or "").strip()
+                if llm_section and not llm_sub_section:
+                    data["sub_section"] = llm_section
+                # Section value only comes from real intro slides; clear the
+                # LLM's guess so propagation doesn't carry it forward.
+                data["section"] = ""
+
         data = _sanitize_llm_output(data, _build_source_haystack(layout.text_lines))
 
-        slide_image_name = f"slide_{page_num:03d}.png"
-        rendered = render_page(pdf_path, page_num, dpi=args.dpi)
-        rendered.save(per_file_dir / slide_image_name, format="PNG")
+        if args.no_images or render_pdf_path is None:
+            slide_image_name = ""  # signals build_slide_record to omit slide_image_path
+        else:
+            slide_image_name = f"slide_{page_num:03d}.png"
+            rendered = render_page(render_pdf_path, page_num, dpi=args.dpi)
+            rendered.save(per_file_dir / slide_image_name, format="PNG")
 
         record = build_slide_record(
             data,
@@ -500,14 +888,86 @@ def main() -> None:
             doc_id=doc_id,
             pre_extracted_tables=layout.tables,
         )
+        if is_pptx:
+            # Rebuild `detail` deterministically from the layout — the LLM
+            # keeps missing within-shape subheader splits (e.g. KEY INITIATIVES
+            # nested under Week 33-35) despite prompt guidance, and typography
+            # + group_id give us everything we need to do this without asking.
+            # Section-intro slides have no meaningful body — leave detail off.
+            if is_section_intro:
+                record.pop("detail", None)
+                record["is_section_intro"] = True
+            else:
+                exclude_haystack = _normalize_for_match(record.get("sub_section", ""))
+                notes = extract_pptx_slide_notes(pptx_path, page_num)
+                new_detail = _build_detail_from_pptx_groups(
+                    layout.text_lines, layout.tables, exclude_haystack,
+                    slide_notes=notes,
+                )
+                # Vision fallback for image-only slides: the deterministic
+                # builder needs typography (bold/underline/size) to work, so
+                # a slide whose content is a single picture with no
+                # meaningful text lines produces empty detail. Ask the LLM
+                # to read the rendered PNG directly and give us sub_section
+                # + body scraped from the image itself.
+                _non_title_text_lines = sum(
+                    1 for tl in layout.text_lines
+                    if _normalize_for_match(tl.text)
+                    and _normalize_for_match(tl.text) != exclude_haystack
+                )
+                needs_vision = (
+                    not args.no_vision
+                    and slide_image_name
+                    and layout.figures
+                    and _non_title_text_lines <= 1
+                )
+                if needs_vision:
+                    image_path = per_file_dir / slide_image_name
+                    try:
+                        print(f"  [vision] image-only slide detected on page {page_num}; asking LLM")
+                        vdata = extract_slide_from_image(
+                            client, settings.openai_model, image_path
+                        )
+                    except Exception as e:
+                        print(f"  ! vision fallback failed on page {page_num}: {e}")
+                        vdata = {}
+                    v_sub = str(vdata.get("sub_section", "") or "").strip()
+                    v_body = str(vdata.get("body", "") or "").strip()
+                    v_fig = str(vdata.get("figure_description", "") or "").strip()
+                    # Only promote fields the deterministic path left empty
+                    # so we don't overwrite a good sub_section from the LLM
+                    # text pass with a vision guess.
+                    if v_sub and not record.get("sub_section"):
+                        record["sub_section"] = v_sub
+                    v_blocks: list[dict] = []
+                    if v_body:
+                        v_blocks.append({"body": v_body})
+                    if v_fig:
+                        v_blocks.append({"subheader": "figure description", "body": v_fig})
+                    if v_blocks:
+                        new_detail = (new_detail or []) + v_blocks
+
+                if new_detail:
+                    record["detail"] = new_detail
+                else:
+                    record.pop("detail", None)
         records.append(record)
         text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
-    _backfill_sections(records)
+    if is_pptx:
+        _propagate_sections_from_intros(records)
+    else:
+        _backfill_sections(records)
     for record in records:
         tls = text_lines_by_slide.get(record["slide_id"], [])
-        _append_missing_text(record, tls)
+        # PDF path only: the deterministic pptx builder already covers every
+        # paragraph in the source, so the belt-and-suspenders "append what the
+        # LLM dropped" step would just re-dump the same text.
+        if not is_pptx:
+            _append_missing_text(record, tls)
         _dedupe_detail(record)
+
+    records = [_reorder_record(r) for r in records]
 
     if args.dry_run:
         for r in records:

@@ -33,6 +33,15 @@ class TextLine:
     size: float | None
     font: str = ""
     bold: bool = False
+    # Underline is a second emphasis signal. Some pptx templates use bold+
+    # underline (or plain underline) for section headings within a text box,
+    # so the deterministic detail builder treats it equivalently to bold.
+    underline: bool = False
+    # Optional grouping hint: paragraphs sharing the same group_id came from the
+    # same source container (pptx text frame). PDF path leaves this None; the
+    # pptx path sets a per-shape integer so the LLM can split alternating
+    # bold/non-bold paragraphs inside one text box into subheader+body pairs.
+    group_id: int | None = None
 
 
 @dataclass
