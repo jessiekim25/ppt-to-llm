@@ -77,11 +77,12 @@ Content fields:
     * captions under figures that name each panel type — text sitting BETWEEN two figures with descriptive text below IS a subheader.
   Capture ALL such headings in reading order (top-to-bottom then left-to-right, respecting COLUMN STRUCTURE above). For each one, put the full descriptive body text next to/below that heading into the subheader's `detail` field, verbatim and complete.
 
-  WHAT COUNTS AS A SUBHEADER — all three must hold:
+  WHAT COUNTS AS A SUBHEADER — all four must hold:
     (α) At most 10 words, and it does NOT end with a period. A phrase that ends with "." is a sentence, not a subheader — it belongs in `detail`. (A trailing ":" is fine and common on subheaders like "How to build layout:".)
     (β) A clear typographic distinction from the text that follows: strictly larger `size`, OR `bold: true` when the body below is not bold.
     (γ) At least one text line of descriptive body directly under/beside it that would become its `detail` or a nested `children` entry. A short bold phrase with nothing beneath it is decorative — put it in slide-level `detail` verbatim, do not emit as a subheader.
-  If a candidate fails ANY of (α)/(β)/(γ), it is body text, not a subheader — merge it back into the surrounding paragraph in `detail` (or its parent subheader's `detail`).
+    (δ) It does NOT start with a numbered-step marker ("1.", "2)", "3:") or a dash/bullet marker ("- ", "• "). Numbered step items and dash bullets are BODY content, not subheader labels — even when their first line is bold or arrives as a separately-boxed short line because the paragraph wrapped across lines. Emit the whole step, including any wrapped continuation lines below it, as one `detail` (or child `detail`) body paragraph. A vertical list of "1. …", "2. …", "3. …" step items — each optionally followed by wrapped continuation text or "- " sub-bullets — belongs in the enclosing block's `detail` verbatim, one item per line; never split one such item into subheader+body across its own wrap.
+  If a candidate fails ANY of (α)/(β)/(γ)/(δ), it is body text, not a subheader — merge it back into the surrounding paragraph in `detail` (or its parent subheader's `detail`).
 
   STRICT RULES:
     (a) EVERY qualifying heading must be its OWN entry with its heading text in the `title` field. Do NOT collapse multiple headings into one subheader's `detail` as a bulleted list.
@@ -269,14 +270,15 @@ Content fields:
 - detail: general body text on the slide that is NOT tied to any subheader — introductory paragraphs, bullets, footnotes. Preserve specifics (dates, numbers, links). "" if there is truly no slide-level body text at all. On a section-intro slide this is almost always "".
 
 - subheaders: array describing every distinct heading + body pair on the slide, other than the main slide title itself.
-  WHAT COUNTS AS A SUBHEADER — all three must hold:
+  WHAT COUNTS AS A SUBHEADER — all four must hold:
     (α) At most 10 words, and does NOT end with a period. A trailing ":" is fine.
     (β) A clear typographic distinction from the text that follows. Either of these qualifies:
         - strictly larger `size` than the text that follows, OR
         - `bold: true` while the text that follows is not bold.
       IMPORTANT: bold-vs-non-bold is the STRONGEST signal in this deck — most subheaders and even table column labels are set in bold with the body text below them in regular weight. Whenever you see a short bold line immediately followed by longer non-bold text that reads as its explanation, treat the bold line as a subheader by default. Do NOT swallow it into the body paragraph.
     (γ) At least one text line beneath/beside it that will become its content — EITHER a descriptive body line OR another qualifying subheader that becomes a child. A bold "Week 33 - 35, August" heading whose only content below is another bold "KEY INITIATIVES" subheader (which in turn owns the bullets) still satisfies (γ) because the child block becomes its `children`. Only a short bold phrase with NOTHING beneath it — no body, no child subheader — is decorative; put it in slide-level `detail` verbatim.
-  If a candidate fails ANY of (α)/(β)/(γ), it is body text — merge it back into the surrounding paragraph in `detail`. But don't discard weak-typography short lines just because you're unsure — err on the side of promoting a plausibly-bold short line to a subheader when the line after it looks like body copy.
+    (δ) It does NOT start with a numbered-step marker ("1.", "2)", "3:") or a dash/bullet marker ("- ", "• "). Numbered step items and bullet items are BODY content, not subheader labels — even when they arrive bold. Emit the whole item, including any wrapped continuation lines, as one `detail` body paragraph in its enclosing block.
+  If a candidate fails ANY of (α)/(β)/(γ)/(δ), it is body text — merge it back into the surrounding paragraph in `detail`. But don't discard weak-typography short lines just because you're unsure — err on the side of promoting a plausibly-bold short line to a subheader when the line after it looks like body copy AND it isn't a bulleted item.
 
   STRICT RULES:
     (a) EVERY qualifying heading is its OWN entry with its heading text in `title`.

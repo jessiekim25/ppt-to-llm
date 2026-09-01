@@ -53,11 +53,30 @@ def _render_table(t: dict) -> str:
     return "\n".join(lines)
 
 
+_LIST_MARKER_RE = re.compile(r"^\s*(?:\d+\s*[.\):]|[-•*])\s+")
+
+
+def _looks_like_list_marker(text: str) -> bool:
+    """True if text starts with a numbered-step marker ('1.', '2)', '3:') or a
+    dash/bullet marker ('- ', '• ').
+
+    Numbered step items and bullet items are body content, not subheader labels
+    — even when the first wrapped line comes in bold or gets split off by
+    pdfminer. Rejecting them as subheaders forces `_block_from_subheader` to
+    demote them into a plain body block that keeps the wrapped continuation.
+    """
+    return bool(_LIST_MARKER_RE.match(text or ""))
+
+
 def _is_valid_subheader_title(title: str) -> bool:
-    """Enforce the prompt's (α) rule: <=10 words, no sentence-terminal punctuation.
+    """Enforce the prompt's (α) rule: <=10 words, no sentence-terminal punctuation,
+    and no list-marker prefix.
 
     A trailing colon is fine ("How to build layout:" is a real subheader).
     A trailing period/question/exclamation mark means it's a sentence, not a label.
+    A leading step marker ("2. ...") or dash bullet ("- ...") means it's an
+    enumerated body item whose first source line got styled/split and then
+    promoted by the LLM — demote it.
     """
     t = title.rstrip()
     if not t:
@@ -65,6 +84,8 @@ def _is_valid_subheader_title(title: str) -> bool:
     if t[-1] in ".?!":
         return False
     if len(t.split()) > 10:
+        return False
+    if _looks_like_list_marker(t):
         return False
     return True
 
@@ -134,7 +155,14 @@ def _blocks_from_group_paragraphs(tls: list[TextLine]) -> list[dict]:
         text = tl.text.strip()
         if not text:
             continue
-        is_subheader = _emph(tl) and len(text.split()) <= 10
+        # A bold-styled paragraph that starts with a list marker ("- ", "1.",
+        # "2)", …) is still a body item, not a subheader — some templates set
+        # every bullet in bold and pdf/pptx extractors preserve that styling.
+        is_subheader = (
+            _emph(tl)
+            and len(text.split()) <= 10
+            and not _looks_like_list_marker(text)
+        )
         if is_subheader:
             is_child = (
                 parent_size is not None
