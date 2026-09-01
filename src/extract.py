@@ -714,32 +714,50 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _dedupe_block(block: dict, seen: set[str]) -> None:
-    """Drop already-seen sentences from body and already-seen strings from table.
+    """Drop already-seen sentences from FALLBACK body blocks and already-seen
+    strings from table blocks.
 
-    Body dedupe is SENTENCE-level: the coverage-check often appends a full
-    pdfminer paragraph when the LLM captured only its first sentence, so
-    exact-body matches miss the duplication. Split on sentence terminators
-    and drop any sentence whose normalized form appeared earlier.
+    Body dedupe targets the trailing paragraph that `_append_missing_text`
+    appends when the LLM missed something — those come in as bare
+    `{"body": ...}` blocks, and the coverage-check often re-adds a full
+    pdfminer paragraph even though the LLM captured its first sentence,
+    which exact-body matching misses.
+
+    Subheader-owned bodies are left intact: parallel columns intentionally
+    carry identical body text under different labels (e.g. two "Products in
+    each product key visual should be positioned within the red line."
+    columns for Ultra Main KV vs. Series KV), and stripping the right
+    column's body because the left column's is already in `seen` would leave
+    the right subheader stranded with no content. Their sentences still land
+    in `seen` so the trailing fallback block is still deduplicated against
+    them.
     """
     if not isinstance(block, dict):
         return
     body = block.get("body")
     if body:
-        kept: list[str] = []
-        for sent in _split_sentences(body):
-            norm = _normalize_for_match(sent)
-            if len(norm) < 5:
-                # too short to dedupe meaningfully; keep as-is without adding to seen
-                kept.append(sent)
-                continue
-            if norm in seen:
-                continue
-            seen.add(norm)
-            kept.append(sent)
-        if kept:
-            block["body"] = " ".join(kept)
+        owns_subheader = bool(block.get("subheader"))
+        if owns_subheader:
+            for sent in _split_sentences(body):
+                norm = _normalize_for_match(sent)
+                if len(norm) >= 5:
+                    seen.add(norm)
         else:
-            del block["body"]
+            kept: list[str] = []
+            for sent in _split_sentences(body):
+                norm = _normalize_for_match(sent)
+                if len(norm) < 5:
+                    # too short to dedupe meaningfully; keep as-is without adding to seen
+                    kept.append(sent)
+                    continue
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                kept.append(sent)
+            if kept:
+                block["body"] = " ".join(kept)
+            else:
+                del block["body"]
     table = block.get("table")
     if table:
         norm = _normalize_for_match(table)
