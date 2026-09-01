@@ -352,6 +352,122 @@ def _build_detail_from_pptx_groups(
     return result
 
 
+_STEP_START = re.compile(r"^\s*\d+\s*[.)]\s+")
+_LONE_STEP_MARKER = re.compile(r"^\s*\d+\s*[.)]\s*$")
+
+
+def _peel_numbered_list_prefix(text: str) -> tuple[str, str]:
+    """Peel a leading numbered list ("1. ...", "2. ...") off `text`.
+
+    Returns (list_text, remainder). If `text` doesn't start with a numbered
+    item, returns ("", text) unchanged. The list ends at the first sentence
+    that doesn't begin with an "N." marker — so a trailing footnote or
+    disclaimer that the LLM mashed together with the list (e.g.
+    "... 2. Refer to ... Image simulated. S Pen embedded ...") is split off
+    into the remainder.
+
+    `_split_sentences` uses a bare `(?<=[.!?])\\s+` split that treats
+    "1." as a complete sentence, so first merge each such lone marker back
+    into the following sentence to recover real numbered items.
+    """
+    if not _STEP_START.match(text or ""):
+        return "", text
+    raw = _split_sentences(text)
+    sentences: list[str] = []
+    i = 0
+    while i < len(raw):
+        s = raw[i]
+        if _LONE_STEP_MARKER.match(s) and i + 1 < len(raw):
+            sentences.append(f"{s} {raw[i + 1]}")
+            i += 2
+        else:
+            sentences.append(s)
+            i += 1
+    last = -1
+    for i, sent in enumerate(sentences):
+        if _STEP_START.match(sent):
+            last = i
+        else:
+            break
+    if last < 0:
+        return "", text
+    numbered = " ".join(sentences[: last + 1])
+    remainder = " ".join(sentences[last + 1 :]).strip()
+    return numbered, remainder
+
+
+def _is_label_only_body(block: dict) -> bool:
+    """True if this bare body block is really an orphaned subheader label —
+    a single line ending in ':', 10 words or fewer, with no subheader/children.
+
+    `_block_from_subheader` demotes an empty-title-only subheader to a bare
+    body block; that pattern is what we're trying to catch here so a downstream
+    salvage step can pair it with its actual body content elsewhere on the
+    slide.
+    """
+    if not isinstance(block, dict):
+        return False
+    if block.get("subheader") or block.get("children") or block.get("table"):
+        return False
+    body = block.get("body")
+    if not body:
+        return False
+    text = str(body).strip()
+    if "\n" in text or not text.endswith(":"):
+        return False
+    return len(text.split()) <= 10
+
+
+def _salvage_orphan_subheader_body(blocks: list[dict]) -> list[dict]:
+    """Reunite an orphaned '<label>:' body block with a numbered-list body
+    elsewhere on the slide.
+
+    The LLM sometimes emits a "How to L-shape panels:" subheader with no
+    body and dumps the numbered list ("1. ... 2. ...") into slide-level
+    `detail` — often mashed together with an unrelated footnote. Detect that
+    exact shape: an orphan colon-label body block plus a body block that
+    starts with a numbered list. Rebuild the label as a real subheader whose
+    body is the peeled numbered list; any non-numbered trailing text (the
+    footnote) stays behind as slide-level body.
+    """
+    orphan_idx = next(
+        (i for i, b in enumerate(blocks) if _is_label_only_body(b)), None
+    )
+    if orphan_idx is None:
+        return blocks
+
+    list_idx = None
+    for i, b in enumerate(blocks):
+        if i == orphan_idx or not isinstance(b, dict):
+            continue
+        if b.get("subheader") or b.get("children") or b.get("table"):
+            continue
+        body = b.get("body")
+        if body and _STEP_START.match(str(body)):
+            list_idx = i
+            break
+    if list_idx is None:
+        return blocks
+
+    numbered, remainder = _peel_numbered_list_prefix(str(blocks[list_idx]["body"]))
+    if not numbered:
+        return blocks
+
+    label = str(blocks[orphan_idx]["body"]).strip()
+    out = list(blocks)
+    out[orphan_idx] = {"subheader": label, "body": numbered}
+    if remainder:
+        out[list_idx] = {"body": remainder}
+    else:
+        out.pop(list_idx)
+        # Popping shifts subsequent indices; orphan_idx was earlier only if
+        # orphan_idx < list_idx, which is the common case here — no fixup
+        # needed. If orphan_idx > list_idx it already shifted below, but
+        # we've already rebuilt it before popping so its new position is
+        # still correct.
+    return out
+
+
 def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> list[dict]:
     """Return the slide's text hierarchy as a list of blocks in reading order.
 
@@ -373,7 +489,7 @@ def _compose_detail(extracted: dict, pre_extracted_tables: list[Table] = ()) -> 
     for sh in extracted.get("subheaders") or []:
         blocks.extend(_block_from_subheader(sh))
 
-    return blocks
+    return _salvage_orphan_subheader_body(blocks)
 
 
 def parse_pages(spec: str) -> set[int]:
