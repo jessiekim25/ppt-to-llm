@@ -709,6 +709,22 @@ def _normalize_for_match(s: str) -> str:
     return " ".join(str(s).lower().split())
 
 
+_PUNCT_RUN = re.compile(r"[^0-9a-z]+")
+
+
+def _normalize_for_dedupe(s: str) -> str:
+    """Punctuation-insensitive normalization for coverage/dedupe matching.
+
+    The LLM sometimes reformats source punctuation ("1)" → "1:", ":" → " — "),
+    so exact-substring matching against the source paragraph misses obvious
+    duplicates and the coverage-check re-appends the same content in its
+    original punctuation, producing two copies of the same list. Collapsing
+    everything to lowercase alnum tokens catches these while still requiring
+    the same word sequence.
+    """
+    return " ".join(_PUNCT_RUN.sub(" ", str(s).lower()).split())
+
+
 def _build_source_haystack(text_lines: list[TextLine]) -> str:
     """Normalized concatenation of every pdfminer text_line — the source-of-truth
     corpus for grounding checks."""
@@ -794,7 +810,12 @@ def _collect_block_text(block: dict, parts: list[str]) -> None:
 
 
 def _collect_output_text(record: dict) -> str:
-    """Concatenate every string this record emits, normalized for substring matching."""
+    """Concatenate every string this record emits, normalized for substring matching.
+
+    Uses `_normalize_for_dedupe` so a source text line that the LLM captured
+    with reformatted punctuation ("1)" → "1:", ":" → "—") still counts as
+    "already emitted" and doesn't get re-appended as a duplicate.
+    """
     parts: list[str] = []
     for k in SLIDE_FIELDS:
         v = record.get(k)
@@ -802,7 +823,7 @@ def _collect_output_text(record: dict) -> str:
             parts.append(str(v))
     for block in record.get("detail") or []:
         _collect_block_text(block, parts)
-    return _normalize_for_match(" ".join(parts))
+    return _normalize_for_dedupe(" ".join(parts))
 
 
 def _is_page_chrome_bbox(bbox_pct: tuple[float, float, float, float]) -> bool:
@@ -855,13 +876,13 @@ def _dedupe_block(block: dict, seen: set[str]) -> None:
         owns_subheader = bool(block.get("subheader"))
         if owns_subheader:
             for sent in _split_sentences(body):
-                norm = _normalize_for_match(sent)
+                norm = _normalize_for_dedupe(sent)
                 if len(norm) >= 5:
                     seen.add(norm)
         else:
             kept: list[str] = []
             for sent in _split_sentences(body):
-                norm = _normalize_for_match(sent)
+                norm = _normalize_for_dedupe(sent)
                 if len(norm) < 5:
                     # too short to dedupe meaningfully; keep as-is without adding to seen
                     kept.append(sent)
@@ -876,7 +897,7 @@ def _dedupe_block(block: dict, seen: set[str]) -> None:
                 del block["body"]
     table = block.get("table")
     if table:
-        norm = _normalize_for_match(table)
+        norm = _normalize_for_dedupe(table)
         if norm in seen:
             del block["table"]
         else:
@@ -924,7 +945,7 @@ def _append_missing_text(record: dict, text_lines: list[TextLine]) -> None:
     for tl in text_lines:
         if _is_page_chrome_bbox(tl.bbox_pct):
             continue
-        norm = _normalize_for_match(tl.text)
+        norm = _normalize_for_dedupe(tl.text)
         if not norm or len(norm) < 3:
             continue
         if norm in output:
