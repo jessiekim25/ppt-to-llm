@@ -229,7 +229,7 @@ MySQL credentials come from a separate AWS Secrets Manager secret:
 
 | secret name  | required keys                                                              |
 | ------------ | -------------------------------------------------------------------------- |
-| `MySQLKeys`  | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`; optional `MYSQL_PORT` (3306), `MYSQL_DATABASE` (`cro`) |
+| `MySQL`      | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`; optional `MYSQL_PORT` (3306), `MYSQL_DATABASE` (`cro`) |
 
 Override with `MYSQL_SECRET_NAME`. See `secrets.example.json`. A missing or unreadable secret is not fatal — the run still produces `slides.jsonl` and `tests.jsonl`; only the MySQL upload is skipped.
 

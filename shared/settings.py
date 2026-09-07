@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from shared.aws_secrets import get_secret
 
 LLM_SECRET_NAME = os.environ.get("LLM_SECRET_NAME", "LLMKeys")
-MYSQL_SECRET_NAME = os.environ.get("MYSQL_SECRET_NAME", "MySQLKeys")
+MYSQL_SECRET_NAME = os.environ.get("MYSQL_SECRET_NAME", "MySQL")
 
 
 @dataclass(frozen=True)

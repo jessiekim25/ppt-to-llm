@@ -277,7 +277,7 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         missing = [k for k, v in (("MYSQL_HOST", settings.mysql_host), ("MYSQL_USER", settings.mysql_user)) if not v]
         print(
             f"[tests] MySQL credentials not configured (missing {', '.join(missing)} "
-            f"in AWS Secrets Manager secret 'MySQLKeys' — override the secret name "
+            f"in AWS Secrets Manager secret 'MySQL' — override the secret name "
             f"with MYSQL_SECRET_NAME). Skipping upload."
         )
         return
