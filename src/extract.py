@@ -1003,24 +1003,45 @@ def main() -> None:
     # / etc. section.
     test_rows: list[dict] = []
     import_date = today_iso()
-    for record in records:
+    test_candidates = [r for r in records if is_test_section(r.get("section", ""))]
+    skipped_intro = skipped_empty = 0
+    section_counts: dict[str, int] = {}
+    for record in test_candidates:
+        section = record.get("section", "")
+        section_counts[section] = section_counts.get(section, 0) + 1
+    if test_candidates:
+        summary = ", ".join(f"{k}: {v}" for k, v in sorted(section_counts.items()))
+        print(f"[tests] {len(test_candidates)} candidate slide(s) under test sections — {summary}")
+
+    for record in test_candidates:
+        sid = record.get("slide_id", "?")
+        section = record.get("section", "")
         if record.get("slide_id") in intro_slide_ids:
-            continue
-        if not is_test_section(record.get("section", "")):
+            skipped_intro += 1
+            print(f"  [tests] skip {sid} ({section}) — section-intro slide")
             continue
         # An intro slide has its `detail` cleared and no `sub_section` body
         # by design — treat any content-empty record under a test section as
         # an intro too, in case a non-pptx path (or a future intro without
         # the flag) sneaks through.
         if not record.get("detail") and not record.get("sub_section"):
+            skipped_empty += 1
+            print(f"  [tests] skip {sid} ({section}) — no detail and no sub_section")
             continue
         try:
             row = extract_test_row(client, settings.openai_model, record, import_date)
         except Exception as e:
-            print(f"  ! test-row extraction failed for {record.get('slide_id')}: {e}")
+            print(f"  ! test-row extraction failed for {sid} ({section}): {e}")
             continue
         test_rows.append(row)
         record["detail"] = make_detail_marker(row)
+        print(f"  [tests] extracted {sid} ({section}) -> {row['issueKey']}")
+
+    if test_candidates:
+        print(
+            f"[tests] summary: {len(test_rows)} extracted, "
+            f"{skipped_intro} intro, {skipped_empty} empty out of {len(test_candidates)} candidates"
+        )
 
     if test_rows:
         tests_out = per_file_dir / "tests.jsonl"

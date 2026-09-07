@@ -259,7 +259,13 @@ def make_detail_marker(row: dict) -> list[dict]:
 
 
 def upload_rows_to_mysql(rows: list[dict], settings) -> None:
-    """REPLACE INTO the historical_tests table for every row.
+    """Upsert every row into cro.historical_test keyed by issueKey.
+
+    Uses INSERT ... ON DUPLICATE KEY UPDATE so a re-extract of the same
+    file overwrites the earlier row for the same issueKey instead of
+    inserting a duplicate. This requires `issueKey` to be the PRIMARY
+    KEY or carry a UNIQUE index; without one, the ON DUPLICATE branch
+    never fires and rows accumulate.
 
     No-ops (with a printed warning) when pymysql isn't installed or the
     MySQL credentials aren't configured — the extractor still writes
@@ -274,7 +280,10 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         print("[tests] pymysql not installed; skipping MySQL upload.")
         return
     if not (settings.mysql_host and settings.mysql_user):
-        missing = [k for k, v in (("MYSQL_HOST", settings.mysql_host), ("MYSQL_USER", settings.mysql_user)) if not v]
+        missing = [
+            k for k, v in (("RDS_HOSTNAME", settings.mysql_host), ("RDS_USERNAME_TESTDB", settings.mysql_user))
+            if not v
+        ]
         print(
             f"[tests] MySQL credentials not configured (missing {', '.join(missing)} "
             f"in AWS Secrets Manager secret 'MySQL' — override the secret name "
@@ -294,7 +303,14 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
     try:
         cols = ", ".join(f"`{c}`" for c in TEST_COLUMNS)
         placeholders = ", ".join(["%s"] * len(TEST_COLUMNS))
-        sql = f"REPLACE INTO {TEST_TABLE_NAME} ({cols}) VALUES ({placeholders})"
+        # Every non-key column is refreshed from the incoming row on conflict.
+        updates = ", ".join(
+            f"`{c}`=VALUES(`{c}`)" for c in TEST_COLUMNS if c != "issueKey"
+        )
+        sql = (
+            f"INSERT INTO {TEST_TABLE_NAME} ({cols}) VALUES ({placeholders}) "
+            f"ON DUPLICATE KEY UPDATE {updates}"
+        )
         values = [
             tuple(
                 json.dumps(r[c], ensure_ascii=False) if c == "secondary_kpis" else r[c]
@@ -305,7 +321,7 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         with conn.cursor() as cur:
             cur.executemany(sql, values)
         conn.commit()
-        print(f"[tests] uploaded {len(rows)} row(s) to {TEST_TABLE_NAME}")
+        print(f"[tests] upserted {len(rows)} row(s) into {TEST_TABLE_NAME}")
     finally:
         conn.close()
 
