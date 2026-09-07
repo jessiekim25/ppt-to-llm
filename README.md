@@ -208,7 +208,7 @@ For each test slide the extractor:
 1. Sends the flattened slide content + speaker notes to the LLM with the `historical_tests` schema and the approved-value lists (test groups, KPIs).
 2. Coerces any drift — a `test_group` or `primary_kpi` that isn't an exact match from the approved list is dropped to `null` rather than shipped.
 3. Writes one row per test slide to `<per-file-dir>/tests.jsonl` with the column order below.
-4. `REPLACE INTO llm_monitor.historical_tests` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured).
+4. `REPLACE INTO cro.historical_test` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured).
 5. Replaces the slide's `detail` in `slides.jsonl` with a single-block pointer marker naming the MySQL table and `issueKey`, so downstream RAG doesn't re-embed the same content twice.
 
 Table columns (order matches MySQL and `tests.jsonl`):
@@ -229,7 +229,7 @@ MySQL credentials come from a separate AWS Secrets Manager secret:
 
 | secret name  | required keys                                                              |
 | ------------ | -------------------------------------------------------------------------- |
-| `MySQLKeys`  | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`; optional `MYSQL_PORT` (3306), `MYSQL_DATABASE` (`llm_monitor`) |
+| `MySQLKeys`  | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`; optional `MYSQL_PORT` (3306), `MYSQL_DATABASE` (`cro`) |
 
 Override with `MYSQL_SECRET_NAME`. See `secrets.example.json`. A missing or unreadable secret is not fatal — the run still produces `slides.jsonl` and `tests.jsonl`; only the MySQL upload is skipped.
 

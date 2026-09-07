@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # avoids an import at runtime just for type hints
     from openai import OpenAI
 
-TEST_TABLE_NAME = "llm_monitor.historical_tests"
+TEST_TABLE_NAME = "cro.historical_test"
 
 TEST_COLUMNS: tuple[str, ...] = (
     "issueKey",
@@ -274,7 +274,12 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         print("[tests] pymysql not installed; skipping MySQL upload.")
         return
     if not (settings.mysql_host and settings.mysql_user):
-        print("[tests] MySQL credentials not configured; skipping upload.")
+        missing = [k for k, v in (("MYSQL_HOST", settings.mysql_host), ("MYSQL_USER", settings.mysql_user)) if not v]
+        print(
+            f"[tests] MySQL credentials not configured (missing {', '.join(missing)} "
+            f"in AWS Secrets Manager secret 'MySQLKeys' — override the secret name "
+            f"with MYSQL_SECRET_NAME). Skipping upload."
+        )
         return
 
     conn = pymysql.connect(

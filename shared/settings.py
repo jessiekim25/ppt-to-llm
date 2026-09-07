@@ -41,5 +41,5 @@ def get_settings() -> Settings:
         mysql_port=int(mysql.get("MYSQL_PORT", 3306) or 3306),
         mysql_user=str(mysql.get("MYSQL_USER", "")),
         mysql_password=str(mysql.get("MYSQL_PASSWORD", "")),
-        mysql_database=str(mysql.get("MYSQL_DATABASE", "llm_monitor")),
+        mysql_database=str(mysql.get("MYSQL_DATABASE", "cro")),
     )
