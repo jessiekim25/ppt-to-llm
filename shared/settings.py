@@ -36,10 +36,10 @@ def get_settings() -> Settings:
     mysql = _safe_get_secret(MYSQL_SECRET_NAME)
     return Settings(
         openai_api_key=llm["OPENAI_API_KEY"],
-        openai_model=llm.get("OPENAI_MODEL", "gpt-4o"),
-        mysql_host=str(mysql.get("MYSQL_HOST", "")),
-        mysql_port=int(mysql.get("MYSQL_PORT", 3306) or 3306),
-        mysql_user=str(mysql.get("MYSQL_USER", "")),
-        mysql_password=str(mysql.get("MYSQL_PASSWORD", "")),
-        mysql_database=str(mysql.get("MYSQL_DATABASE", "cro")),
+        openai_model="gpt-4o",
+        mysql_host=str(mysql.get("RDS_HOSTNAME", "")),
+        mysql_port=3306,
+        mysql_user=str(mysql.get("RDS_USERNAME_TESTDB", "")),
+        mysql_password=str(mysql.get("RDS_PASSWORD_TESTDB", "")),
+        mysql_database=str(mysql.get("RDS_DB_NAME", "cro")),
     )

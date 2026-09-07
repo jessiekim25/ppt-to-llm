@@ -970,6 +970,16 @@ def main() -> None:
         records.append(record)
         text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
+    # Capture intro slide ids BEFORE section propagation pops the flag —
+    # a "Live tests" intro slide's `section` is set to the intro title
+    # itself, so `is_test_section("Live tests")` matches the intro just as
+    # readily as it matches the content slides that inherit that section.
+    # We keep the ids around so the test-row extraction loop can skip them.
+    intro_slide_ids: set[str] = (
+        {r["slide_id"] for r in records if r.get("is_section_intro")}
+        if is_pptx
+        else set()
+    )
     if is_pptx:
         _propagate_sections_from_intros(records)
     else:
@@ -994,7 +1004,15 @@ def main() -> None:
     test_rows: list[dict] = []
     import_date = today_iso()
     for record in records:
+        if record.get("slide_id") in intro_slide_ids:
+            continue
         if not is_test_section(record.get("section", "")):
+            continue
+        # An intro slide has its `detail` cleared and no `sub_section` body
+        # by design — treat any content-empty record under a test section as
+        # an intro too, in case a non-pptx path (or a future intro without
+        # the flag) sneaks through.
+        if not record.get("detail") and not record.get("sub_section"):
             continue
         try:
             row = extract_test_row(client, settings.openai_model, record, import_date)
