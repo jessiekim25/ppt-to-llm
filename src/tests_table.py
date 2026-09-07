@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # avoids an import at runtime just for type hints
@@ -343,4 +343,10 @@ def write_tests_jsonl(rows: list[dict], out_path) -> None:
 
 
 def today_iso() -> str:
-    return date.today().isoformat()
+    """Timestamp of the extraction run — 'YYYY-MM-DD HH:MM:SS' in local time.
+
+    MySQL DATETIME accepts this format directly, so a re-extract's
+    importDate carries the actual wall-clock time of the run rather than
+    midnight-of-that-day.
+    """
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
