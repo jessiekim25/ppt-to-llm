@@ -199,6 +199,40 @@ python -m src.extract --pptx path/to/many_decks.zip --pick march
 
 **Section behavior for pptx.** Section labels are not read from a top-left header (as they are in the guideline PDF). Instead, the extractor looks for "section-intro" slides — slides whose only content is a big title naming the next section (e.g. `Roadmap`, `March review`, `Live tests`). The intro slide's title becomes the `section` for that slide and for every following slide until the next intro slide.
 
+## Test-section slides (`tests.jsonl` + MySQL sink)
+
+Slides whose propagated `section` names a test bucket — e.g. `Live tests`, `Flagship tests`, `Upcoming tests`, `Blocked tests`, any section whose name matches the whole word `test`/`tests` — are treated as one-experiment specs and projected onto a fixed table schema instead of being emitted as free-form `detail` in `slides.jsonl`.
+
+For each test slide the extractor:
+
+1. Sends the flattened slide content + speaker notes to the LLM with the `historical_tests` schema and the approved-value lists (test groups, KPIs).
+2. Coerces any drift — a `test_group` or `primary_kpi` that isn't an exact match from the approved list is dropped to `null` rather than shipped.
+3. Writes one row per test slide to `<per-file-dir>/tests.jsonl` with the column order below.
+4. `REPLACE INTO llm_monitor.historical_tests` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured).
+5. Replaces the slide's `detail` in `slides.jsonl` with a single-block pointer marker naming the MySQL table and `issueKey`, so downstream RAG doesn't re-embed the same content twice.
+
+Table columns (order matches MySQL and `tests.jsonl`):
+
+| column            | value                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------- |
+| `issueKey`        | `slide_id + "_" + section` — primary key                                                 |
+| `test_name`       | slide's `sub_section`                                                                    |
+| `test_group`      | one of the approved test-group labels (see `src/tests_table.py`), else `null`            |
+| `hypothesis`      | body under the slide's `Hypothesis` subheader, verbatim                                  |
+| `primary_kpi`     | one of `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor`        |
+| `secondary_kpis`  | list of the same set (JSON-encoded in MySQL); `[]` if empty or would duplicate primary   |
+| `target_audience` | free text (e.g. `all users`, `mobile only`)                                              |
+| `notes`           | caveats / exclusions / watch-outs — `null` if none                                       |
+| `importDate`      | ISO date of the extraction run                                                           |
+
+MySQL credentials come from a separate AWS Secrets Manager secret:
+
+| secret name  | required keys                                                              |
+| ------------ | -------------------------------------------------------------------------- |
+| `MySQLKeys`  | `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`; optional `MYSQL_PORT` (3306), `MYSQL_DATABASE` (`llm_monitor`) |
+
+Override with `MYSQL_SECRET_NAME`. See `secrets.example.json`. A missing or unreadable secret is not fatal — the run still produces `slides.jsonl` and `tests.jsonl`; only the MySQL upload is skipped.
+
 ### Re-chunk or rebuild the corpus without re-extracting
 
 ```bash
@@ -222,6 +256,7 @@ python -m src.corpus --files-dir output/files --out output/corpus/chunks.jsonl
 | `--corpus-out` | `<output-dir>/../corpus/chunks.jsonl` | Path to the combined corpus file rebuilt after extract.                                  |
 | `--no-chunk`   | off                                | Skip building this file's `chunks.jsonl` after extraction.                                |
 | `--no-corpus`  | off                                | Skip rebuilding the combined corpus file after extraction.                                |
+| `--no-tests-upload` | off                           | Skip pushing test-section rows to MySQL. `tests.jsonl` is still written and each test slide's `detail` is still replaced with the MySQL pointer marker. |
 | `--product`    | `""`                               | Fallback for the `product` field when not visible on a slide.                             |
 | `--dpi`        | `150`                              | Render DPI for the per-slide screenshots.                                                 |
 | `--limit`      | `0` (all)                          | Only process the first N slides. Ignored if `--pages` is set.                             |
@@ -242,6 +277,7 @@ output/
     <doc_id>/
       slides.jsonl      # one JSON record per slide (display shape)
       chunks.jsonl      # one retrieval row per slide (embed_text + metadata)
+      tests.jsonl       # one row per test-section slide (see Test-section slides)
       slide_001.png     # full-slide screenshot referenced by slide_image_path
       slide_002.png
       ...
@@ -264,6 +300,7 @@ src/
   pptx_layout.py     # python-pptx text/tables/pictures per slide (PageLayout-shaped)
   pptx_utils.py     # pptx -> companion PDF (LibreOffice headless) + .pptx.zip input handling
   llm.py             # OpenAI text-only extraction (PDF + PPTX prompts, positioned text -> structured JSON)
+  tests_table.py     # test-section slides -> historical_tests row + MySQL upload
 shared/
   aws_secrets.py     # cached get_secret(name) via boto3
   settings.py        # get_settings() -> frozen Settings dataclass

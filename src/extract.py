@@ -20,6 +20,14 @@ from .pptx_layout import (
     slide_count as pptx_slide_count,
 )
 from .pptx_utils import pptx_to_pdf, resolve_pptx_input
+from .tests_table import (
+    extract_test_row,
+    is_test_section,
+    make_detail_marker,
+    today_iso,
+    upload_rows_to_mysql,
+    write_tests_jsonl,
+)
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
 
@@ -452,6 +460,14 @@ def parse_args() -> argparse.Namespace:
         help="Skip the vision-LLM fallback that reads text off of image-only "
         "pptx slides (slides with a picture and essentially no extractable text). "
         "Vision calls use the same model and API key as the text extraction.",
+    )
+    p.add_argument(
+        "--no-tests-upload",
+        action="store_true",
+        help="Skip pushing structured rows for test-section slides to the "
+        "llm_monitor.historical_tests MySQL table. The rows are still "
+        "extracted and written to tests.jsonl, and each test slide's "
+        "detail is still replaced with the MySQL pointer marker.",
     )
     p.add_argument(
         "--diagnose-shapes",
@@ -968,6 +984,34 @@ def main() -> None:
         _dedupe_detail(record)
 
     records = [_reorder_record(r) for r in records]
+
+    # Test-section slides get projected onto the historical_tests table
+    # schema, uploaded to MySQL, and have their JSONL detail replaced with
+    # a pointer marker so the RAG pipeline doesn't re-embed the same
+    # content twice. Runs after section propagation so a content slide
+    # correctly picks up its intro slide's "Live tests" / "Blocked tests"
+    # / etc. section.
+    test_rows: list[dict] = []
+    import_date = today_iso()
+    for record in records:
+        if not is_test_section(record.get("section", "")):
+            continue
+        try:
+            row = extract_test_row(client, settings.openai_model, record, import_date)
+        except Exception as e:
+            print(f"  ! test-row extraction failed for {record.get('slide_id')}: {e}")
+            continue
+        test_rows.append(row)
+        record["detail"] = make_detail_marker(row)
+
+    if test_rows:
+        tests_out = per_file_dir / "tests.jsonl"
+        write_tests_jsonl(test_rows, tests_out)
+        if not args.no_tests_upload:
+            try:
+                upload_rows_to_mysql(test_rows, settings)
+            except Exception as e:
+                print(f"  ! MySQL upload failed: {e}")
 
     if args.dry_run:
         for r in records:

@@ -359,3 +359,65 @@ def extract_slide(client: OpenAI, model: str, payload: dict, kind: str = "pdf") 
         temperature=0,
     )
     return json.loads(response.choices[0].message.content)
+
+
+TEST_EXTRACTION_PROMPT = """You extract structured test-experiment metadata from a single PowerPoint slide describing one website A/B test.
+
+You will receive a JSON payload with the slide's flattened content and its speaker notes:
+{
+  "section": "<the section the slide belongs to, e.g. Live tests>",
+  "sub_section": "<the slide's main title, i.e. the test name>",
+  "content": "<flattened detail blocks — subheaders in [brackets], body/table text on following lines>",
+  "notes": "<slide speaker notes / memo — may contain audience, KPIs, caveats>"
+}
+
+Return a JSON object with EXACTLY these fields (no others):
+{
+  "test_group": "<one value from the APPROVED TEST GROUPS list below, or null>",
+  "hypothesis": "<the slide's body text under the 'Hypothesis' subheader, verbatim; null if absent>",
+  "primary_kpi": "<one of: CVR | AOV | Engagement Rate | Add to Cart Rate | Revenue per Visitor, or null>",
+  "secondary_kpis": ["<zero or more of the same KPI values; [] if none or would duplicate primary_kpi>"],
+  "target_audience": "<who the test runs on, e.g. all users, mobile only, logged-in members; null if not stated>",
+  "notes": "<caveats, exclusions, watch-outs; null if none>"
+}
+
+APPROVED TEST GROUPS — test_group MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
+{TEST_GROUPS_LIST}
+
+APPROVED KPIS — primary_kpi and each secondary_kpis entry MUST be an exact match from this list:
+- CVR
+- AOV
+- Engagement Rate
+- Add to Cart Rate
+- Revenue per Visitor
+
+RULES:
+1. Read BOTH the `content` and the `notes` when populating primary_kpi, secondary_kpis, and target_audience — a slide often puts the KPI or audience only in the memo.
+2. If the slide names a metric NOT in the approved KPI list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Do not invent new KPI names.
+3. If the slide's test-type description is not on the APPROVED TEST GROUPS list, choose the CLOSEST approved group. Do not invent new group names.
+4. secondary_kpis must be an empty list `[]` if none are mentioned, or if the only candidate would duplicate `primary_kpi`.
+5. If any field truly cannot be inferred from either content or notes, use `null` (empty list `[]` for secondary_kpis).
+6. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
+
+Return ONLY the JSON object. No prose, no code fences."""
+
+
+def extract_test_metadata(client: OpenAI, model: str, payload: dict, test_groups: list[str]) -> dict:
+    """Ask the LLM to project one test slide onto the historical_tests table schema."""
+    system_prompt = TEST_EXTRACTION_PROMPT.replace(
+        "{TEST_GROUPS_LIST}",
+        "\n".join(f"- {g}" for g in test_groups),
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return json.loads(response.choices[0].message.content)
