@@ -218,12 +218,12 @@ Table columns (order matches MySQL and `tests.jsonl`):
 | ------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `source`           | `slide_id + "_" + section` — primary key                                                                     |
 | `target_activity`  | reserved for later hand-tagging — always `null` in this pipeline                                             |
-| `test_name`        | slide's `sub_section`                                                                                        |
+| `test_name`        | test's name — LLM-emitted, defaults to the slide's `sub_section`                                             |
 | `concept`          | one of the approved concept labels (see `src/tests_table.py`), else `null`                                   |
-| `component`        | list of approved page-types where the test runs: `Buy Page`, `Handraisers`, `Home Page`, `Home PCD`, `Landing Page`, `Multiple`, `Offer Page`, `PCD`, `PD-MMP`, `PDP`, `PF`, `PFP` |
-| `product`          | list of approved product groups being tested: `TV`, `DA`, `Tablet`, `Paradigm`, `Flip7/Fold7`, `B7Q7`, `Total` (catch-all) |
+| `component`        | non-empty list of page-types where the test runs, from: `Buy Page`, `Handraisers`, `Home Page`, `Home PCD`, `Landing Page`, `Multiple`, `Offer Page`, `PCD`, `PD-MMP`, `PDP`, `PF`, `PFP`. Falls back to `["Multiple"]` when unknown |
+| `product`          | non-empty list of product groups being tested. Common buckets: `TV`, `DA`, `Tablet`, `Paradigm`, `Flip7/Fold7`, `B7Q7`, `Total`; specific products not in that list (e.g. `Galaxy S26`) are kept verbatim. Falls back to `["Total"]` when no product is named |
 | `hypothesis`       | body under the slide's `Hypothesis` subheader, verbatim                                                      |
-| `kpi`              | de-duplicated list of every KPI the test tracks — `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor` |
+| `kpi`              | non-empty, de-duplicated list of every KPI the test tracks — `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor` |
 | `target_audience`  | free text (e.g. `all users`, `mobile only`)                                                                  |
 | `notes`            | caveats / exclusions / watch-outs — `null` if none                                                           |
 | `image_path`       | list of saved right-side image paths, relative to `<per-file-dir>` (e.g. `test_images/test_042_1.png`)       |

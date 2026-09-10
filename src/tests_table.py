@@ -12,12 +12,14 @@ Table schema (column order matches the target table):
 
   source           : slide_id + section        (primary key)
   target_activity  : always None for now — reserved for later hand-tagging
-  test_name        : sub_section
+  test_name        : LLM-emitted test name (defaults to sub_section)
   concept          : one of CONCEPTS
-  component        : list of APPROVED_COMPONENTS (JSON-encoded in MySQL)
-  product          : list of APPROVED_PRODUCTS (JSON-encoded in MySQL)
+  component        : non-empty list of APPROVED_COMPONENTS (JSON-encoded in MySQL)
+  product          : non-empty list of product names — PRODUCT_EXAMPLES are
+                     common buckets but free-form values (e.g. "Galaxy S26")
+                     are kept as-is (JSON-encoded in MySQL)
   hypothesis       : slide body under 'Hypothesis' subheader
-  kpi              : list of APPROVED_KPIS (JSON-encoded in MySQL)
+  kpi              : non-empty list of APPROVED_KPIS (JSON-encoded in MySQL)
   target_audience  : free text
   notes            : caveats / exclusions / watch-outs
   image_path       : list of saved right-side image paths (JSON-encoded in MySQL)
@@ -77,7 +79,7 @@ APPROVED_COMPONENTS: tuple[str, ...] = (
     "PFP",
 )
 
-APPROVED_PRODUCTS: tuple[str, ...] = (
+PRODUCT_EXAMPLES: tuple[str, ...] = (
     "TV",
     "DA",
     "Tablet",
@@ -86,6 +88,14 @@ APPROVED_PRODUCTS: tuple[str, ...] = (
     "B7Q7",
     "Total",
 )
+
+# Fallback used when the LLM leaves `product` empty. "Total" is the
+# catch-all in PRODUCT_EXAMPLES — the schema requires ≥1 value.
+_PRODUCT_FALLBACK = "Total"
+
+# Fallback used when the LLM leaves `component` empty. "Multiple" is the
+# catch-all in APPROVED_COMPONENTS — the schema requires ≥1 value.
+_COMPONENT_FALLBACK = "Multiple"
 
 CONCEPTS: tuple[str, ...] = (
     "Abandoned Cart & Journey Recovery",
@@ -194,29 +204,54 @@ def _coerce_concept(value: object) -> str | None:
     return v if v in CONCEPTS else None
 
 
-def _coerce_from_list(value: object, approved: tuple[str, ...]) -> list[str]:
-    """Coerce an LLM value into a de-duplicated list restricted to `approved`.
+def _as_string_list(value: object) -> list[str]:
+    """Return `value` normalized to a list[str] of trimmed non-empty strings.
 
     Accepts either a single string or a list of strings — LLMs sometimes
     emit a scalar when only one value applies even though the schema asks
-    for a list. Anything not exactly in `approved` is silently dropped.
+    for a list.
     """
-    approved_set = set(approved)
     if value is None:
         return []
     if isinstance(value, str):
-        raw = [value]
+        raw: list = [value]
     elif isinstance(value, list):
         raw = value
     else:
         return []
     out: list[str] = []
-    seen: set[str] = set()
     for v in raw:
         if not isinstance(v, str):
             continue
         s = v.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _coerce_from_list(value: object, approved: tuple[str, ...]) -> list[str]:
+    """De-duplicated list restricted to `approved` values (drops the rest)."""
+    approved_set = set(approved)
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
         if s in approved_set and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _coerce_products(value: object) -> list[str]:
+    """De-duplicated list of product names — approved list is EXAMPLES, not a filter.
+
+    A specific product mentioned on the slide (e.g. "Galaxy S26", "QLED 8K")
+    that isn't in PRODUCT_EXAMPLES is still kept verbatim — the column is
+    meant to hold whichever product the test targets, not just the buckets.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
+        if s not in seen:
             seen.add(s)
             out.append(s)
     return out
@@ -262,12 +297,24 @@ def build_test_row(
     kpi = _coerce_from_list(kpi_raw, APPROVED_KPIS)
 
     component = _coerce_from_list(extracted.get("component"), APPROVED_COMPONENTS)
-    product = _coerce_from_list(extracted.get("product"), APPROVED_PRODUCTS)
+    if not component:
+        # Schema requires ≥1 value; fall back to the catch-all rather than []
+        # so the column is never blank.
+        component = [_COMPONENT_FALLBACK]
+
+    product = _coerce_products(extracted.get("product"))
+    if not product:
+        product = [_PRODUCT_FALLBACK]
+
+    # test_name defaults to the slide's sub_section — the LLM may override
+    # only when the slide clearly names the test differently.
+    llm_test_name = _coerce_str_or_none(extracted.get("test_name"))
+    test_name = llm_test_name or (sub_section or None)
 
     return {
         "source": f"{slide_id}_{section}" if section else slide_id,
         "target_activity": None,
-        "test_name": sub_section or None,
+        "test_name": test_name,
         "concept": _coerce_concept(extracted.get("concept") or extracted.get("test_group")),
         "component": component,
         "product": product,
@@ -302,7 +349,7 @@ def extract_test_row(
         payload,
         concepts=list(CONCEPTS),
         components=list(APPROVED_COMPONENTS),
-        products=list(APPROVED_PRODUCTS),
+        products=list(PRODUCT_EXAMPLES),
     )
     return build_test_row(record, extracted, import_date, image_paths=image_paths)
 
