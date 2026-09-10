@@ -17,6 +17,7 @@ from .pptx_layout import (
     diagnose_slide_shapes as diagnose_pptx_slide_shapes,
     extract_slide_layout as extract_pptx_slide_layout,
     extract_slide_notes as extract_pptx_slide_notes,
+    save_right_side_pictures as save_pptx_right_side_pictures,
     slide_count as pptx_slide_count,
 )
 from .pptx_utils import pptx_to_pdf, resolve_pptx_input
@@ -1068,14 +1069,37 @@ def main() -> None:
             skipped_empty += 1
             print(f"  [tests] skip {sid} ({section}) — no detail and no sub_section")
             continue
+        image_paths: list[str] = []
+        if is_pptx:
+            # Slide number is the trailing 3-digit segment of slide_id (e.g. "…#042").
+            try:
+                slide_num_for_pics = int(sid.rsplit("#", 1)[-1])
+            except ValueError:
+                slide_num_for_pics = 0
+            if slide_num_for_pics:
+                try:
+                    image_paths = save_pptx_right_side_pictures(
+                        pptx_path,
+                        slide_num_for_pics,
+                        per_file_dir / "test_images",
+                        filename_stem=f"test_{slide_num_for_pics:03d}",
+                    )
+                except Exception as e:
+                    print(f"  ! saving right-side pictures failed for {sid}: {e}")
         try:
-            row = extract_test_row(client, settings.openai_model, record, import_date)
+            row = extract_test_row(
+                client,
+                settings.openai_model,
+                record,
+                import_date,
+                image_paths=image_paths,
+            )
         except Exception as e:
             print(f"  ! test-row extraction failed for {sid} ({section}): {e}")
             continue
         test_rows.append(row)
         record["detail"] = make_detail_marker(row)
-        print(f"  [tests] extracted {sid} ({section}) -> {row['issueKey']}")
+        print(f"  [tests] extracted {sid} ({section}) -> {row['source']}")
 
     if test_candidates:
         print(
