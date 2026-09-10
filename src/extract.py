@@ -1004,14 +1004,54 @@ def main() -> None:
     test_rows: list[dict] = []
     import_date = today_iso()
     test_candidates = [r for r in records if is_test_section(r.get("section", ""))]
+
+    # De-duplicate consecutive slides that share (section, sub_section). A
+    # test — especially under 'Concluded tests' — is often split across two
+    # adjacent slides: the first carries background, the second carries the
+    # hypothesis + results. Only the LAST slide of each same-title run
+    # holds the authoritative row, so drop the earlier siblings. Empty
+    # sub_sections don't fuse — they'd collapse unrelated title-less slides
+    # together.
+    deduped: list[dict] = []
+    skipped_paired = 0
+    for i, r in enumerate(test_candidates):
+        section = r.get("section", "") or ""
+        title = (r.get("sub_section", "") or "").strip().casefold()
+        if not title:
+            deduped.append(r)
+            continue
+        j = i + 1
+        while j < len(test_candidates):
+            nxt = test_candidates[j]
+            if (nxt.get("section", "") or "") != section:
+                break
+            if (nxt.get("sub_section", "") or "").strip().casefold() != title:
+                break
+            j += 1
+        if j > i + 1:
+            # There is a same-title successor still in the list — this
+            # slide is the earlier half of the pair, so skip it. The
+            # loop reaches the successor on its own iteration.
+            skipped_paired += 1
+            print(
+                f"  [tests] skip {r.get('slide_id')} ({section}) — "
+                f"earlier half of a same-title pair (kept: {test_candidates[j - 1].get('slide_id')})"
+            )
+            continue
+        deduped.append(r)
+    test_candidates = deduped
+
     skipped_intro = skipped_empty = 0
     section_counts: dict[str, int] = {}
     for record in test_candidates:
         section = record.get("section", "")
         section_counts[section] = section_counts.get(section, 0) + 1
-    if test_candidates:
+    if test_candidates or skipped_paired:
         summary = ", ".join(f"{k}: {v}" for k, v in sorted(section_counts.items()))
-        print(f"[tests] {len(test_candidates)} candidate slide(s) under test sections — {summary}")
+        print(
+            f"[tests] {len(test_candidates)} candidate slide(s) under test sections — {summary}"
+            + (f" (+{skipped_paired} earlier-half pair(s) skipped)" if skipped_paired else "")
+        )
 
     for record in test_candidates:
         sid = record.get("slide_id", "?")

@@ -378,7 +378,7 @@ Return a JSON object with EXACTLY these fields (no others):
   "primary_kpi": "<one of: CVR | AOV | Engagement Rate | Add to Cart Rate | Revenue per Visitor, or null>",
   "secondary_kpis": ["<zero or more of the same KPI values; [] if none or would duplicate primary_kpi>"],
   "target_audience": "<who the test runs on, e.g. all users, mobile only, logged-in members; null if not stated>",
-  "notes": "<caveats, exclusions, watch-outs; null if none>"
+  "notes": "<caveats, exclusions, watch-outs AND — for concluded tests — the actual test results (see RULE 7); null if none>"
 }
 
 APPROVED TEST GROUPS — test_group MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
@@ -398,6 +398,11 @@ RULES:
 4. secondary_kpis must be an empty list `[]` if none are mentioned, or if the only candidate would duplicate `primary_kpi`.
 5. If any field truly cannot be inferred from either content or notes, use `null` (empty list `[]` for secondary_kpis).
 6. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
+7. TEST RESULTS — concluded tests carry outcome/results information below (or alongside) the Hypothesis: uplift/lift figures, statistical significance, winning variant, revenue impact, learnings, verdicts like "winner", "flat", "no impact", "rolled out to 100%". When the slide (or its notes) contains any of that, prepend it to `notes` as a `Result:` clause using this format:
+     "Result: <finding 1>; <finding 2>; <finding 3>"
+   — semicolons between items, verbatim numbers/percentages. If the slide ALSO has caveats/exclusions/watch-outs, append them after the Result clause separated by " | " so both fit in one string:
+     "Result: +3.2% CVR on mobile; no impact on desktop | Excludes returning users"
+   If there is no result-shaped content, leave `notes` to caveats only (or null). Section names to expect: 'Concluded tests', 'Completed tests', 'Wrapped tests' — but a result section (e.g. 'Results', 'Outcome', 'Learnings') on any slide qualifies.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
