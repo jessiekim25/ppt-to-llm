@@ -406,8 +406,8 @@ RULES:
    d) Verdicts / next steps — "winner", "rolled out to 100%", "iterate", "kill", "hold".
    Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one. Example for the example slide above:
      "Result: +18% CVR Uplift; £109K revenue so far; Orders uplift observed, but no improvement in % of users taking out finance proposition — finance-option volumes minimal (<50) with no orders in either experience"
-   If the slide ALSO has caveats/exclusions AND background (RULE 9), append them after the Result clause with " | " between segments:
-     "Result: ... | Goal: ... | Caveats: ..."
+   If the slide ALSO has caveats/exclusions AND background (RULE 9), append them before the Result clause with " | " between segments:
+     "Goal: ... | Caveats: ... | Result: ..."
    If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 9. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', 'Wrapped tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
 
 8. TARGET AUDIENCE — populate this whenever the slide gives ANY signal about who the test aims at, not just when a "Target audience" label appears. Sources to mine, in order of precedence:
@@ -418,9 +418,9 @@ RULES:
    Keep it CONCISE (a short noun phrase, e.g. "Samsung TV shoppers considering finance", "Users with an eligible old Galaxy phone to trade in", "Mobile visitors on the PDP"). Use null ONLY when the slide has zero audience-shaped signal in ANY of the above — not because the word "audience" is missing.
 
 9. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
-   a) `Result: ...` clause when RULE 7 applies (concluded tests / results section).
-   b) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value, drawn from a Background, Objective, Opportunity, Rationale, "Why" subheader, or the opening paragraph of the slide. Capture the WHY: what business outcome the team hopes to move, or what customer problem the test addresses. Skip if the hypothesis already fully covers it.
-   c) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
+   a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
+   b) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
+   c) `Result: ...` clause when RULE 7 applies (concluded tests / results section).
    d) Any other short piece of speaker-note context that isn't already in another column (test-run window, exposure %, rollout plan, follow-up test link).
    Keep each segment tight — one sentence or a short semicolon-separated list. Skip a segment when it would add nothing. Use null only when there is genuinely nothing meaningful outside the other columns.
 
