@@ -359,3 +359,90 @@ def extract_slide(client: OpenAI, model: str, payload: dict, kind: str = "pdf") 
         temperature=0,
     )
     return json.loads(response.choices[0].message.content)
+
+
+TEST_EXTRACTION_PROMPT = """You extract structured test-experiment metadata from a single PowerPoint slide describing one website A/B test.
+
+You will receive a JSON payload with the slide's flattened content and its speaker notes:
+{
+  "section": "<the section the slide belongs to, e.g. Live tests>",
+  "sub_section": "<the slide's main title, i.e. the test name>",
+  "content": "<flattened detail blocks — subheaders in [brackets], body/table text on following lines>",
+  "notes": "<slide speaker notes / memo — may contain audience, KPIs, caveats>"
+}
+
+Return a JSON object with EXACTLY these fields (no others):
+{
+  "test_group": "<one value from the APPROVED TEST GROUPS list below, or null>",
+  "hypothesis": "<the slide's body text under the 'Hypothesis' subheader, verbatim; null if absent>",
+  "primary_kpi": "<one of: CVR | AOV | Engagement Rate | Add to Cart Rate | Revenue per Visitor, or null>",
+  "secondary_kpis": ["<zero or more of the same KPI values; [] if none or would duplicate primary_kpi>"],
+  "target_audience": "<who the test runs on or is aimed at — see RULE 8; null ONLY when the slide gives no signal whatsoever>",
+  "notes": "<see RULE 9 — captures test results (concluded tests), background/goals/objectives/opportunities, and caveats; null only when the slide truly has none of these beyond what the other columns cover>"
+}
+
+APPROVED TEST GROUPS — test_group MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
+{TEST_GROUPS_LIST}
+
+APPROVED KPIS — primary_kpi and each secondary_kpis entry MUST be an exact match from this list:
+- CVR
+- AOV
+- Engagement Rate
+- Add to Cart Rate
+- Revenue per Visitor
+
+RULES:
+1. Read BOTH the `content` and the `notes` when populating primary_kpi, secondary_kpis, and target_audience — a slide often puts the KPI or audience only in the memo.
+2. If the slide names a metric NOT in the approved KPI list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Do not invent new KPI names.
+3. If the slide's test-type description is not on the APPROVED TEST GROUPS list, choose the CLOSEST approved group. Do not invent new group names.
+4. secondary_kpis must be an empty list `[]` if none are mentioned, or if the only candidate would duplicate `primary_kpi`.
+5. If any field truly cannot be inferred from either content or notes, use `null` (empty list `[]` for secondary_kpis). But do NOT default to null just because there is no explicit label — RULES 8 and 9 below require inference from the surrounding language.
+6. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
+
+7. TEST RESULTS — concluded tests share a repeating three-slot layout (an uplift/lift figure, a revenue/monetary figure, and a short learnings paragraph — each typically next to an icon). Capture EVERY slot you can find, in the slide OR its notes:
+   a) Uplift / lift / significance figures — "+18% CVR Uplift", "+3.2% ATC", "flat", "no impact", "stat sig at 95%".
+   b) Revenue / monetary impact — "£109K so far", "$1.2M projected", "+£40 AOV".
+   c) Learnings / analysis paragraph — verbatim (or tightened to essentials): the "whilst / however / because" sentence that explains what happened (e.g. "Whilst this test produced an orders uplift, there was no improvement in the % of users taking out the finance proposition").
+   d) Verdicts / next steps — "winner", "rolled out to 100%", "iterate", "kill", "hold".
+   Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one. Example for the example slide above:
+     "Result: +18% CVR Uplift; £109K revenue so far; Orders uplift observed, but no improvement in % of users taking out finance proposition — finance-option volumes minimal (<50) with no orders in either experience"
+   If the slide ALSO has caveats/exclusions AND background (RULE 9), append them before the Result clause with " | " between segments:
+     "Goal: ... | Caveats: ... | Result: ..."
+   If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 9. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', 'Wrapped tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
+
+8. TARGET AUDIENCE — populate this whenever the slide gives ANY signal about who the test aims at, not just when a "Target audience" label appears. Sources to mine, in order of precedence:
+   a) An explicit audience/segmentation line ("mobile users", "logged-in customers", "returning US visitors").
+   b) The Background or Objective paragraph: language like "we aim to encourage more customers to ...", "for shoppers who ...", "users considering finance", "prospects browsing the configurator" — infer the implied audience from what the test is trying to influence.
+   c) Product/scheme context: a trade-in scheme test implies "users with an eligible old device to trade in"; a finance-configurator test implies "shoppers considering finance on <product line>"; a mobile-only banner test implies "mobile visitors".
+   d) The slide's speaker notes.
+   Keep it CONCISE (a short noun phrase, e.g. "Samsung TV shoppers considering finance", "Users with an eligible old Galaxy phone to trade in", "Mobile visitors on the PDP"). Use null ONLY when the slide has zero audience-shaped signal in ANY of the above — not because the word "audience" is missing.
+
+9. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
+   a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
+   b) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
+   c) `Result: ...` clause when RULE 7 applies (concluded tests / results section).
+   d) Any other short piece of speaker-note context that isn't already in another column (test-run window, exposure %, rollout plan, follow-up test link).
+   Keep each segment tight — one sentence or a short semicolon-separated list. Skip a segment when it would add nothing. Use null only when there is genuinely nothing meaningful outside the other columns.
+
+Return ONLY the JSON object. No prose, no code fences."""
+
+
+def extract_test_metadata(client: OpenAI, model: str, payload: dict, test_groups: list[str]) -> dict:
+    """Ask the LLM to project one test slide onto the historical_tests table schema."""
+    system_prompt = TEST_EXTRACTION_PROMPT.replace(
+        "{TEST_GROUPS_LIST}",
+        "\n".join(f"- {g}" for g in test_groups),
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(payload, ensure_ascii=False),
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0,
+    )
+    return json.loads(response.choices[0].message.content)

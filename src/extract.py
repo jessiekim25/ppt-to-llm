@@ -20,6 +20,14 @@ from .pptx_layout import (
     slide_count as pptx_slide_count,
 )
 from .pptx_utils import pptx_to_pdf, resolve_pptx_input
+from .tests_table import (
+    extract_test_row,
+    is_test_section,
+    make_detail_marker,
+    today_iso,
+    upload_rows_to_mysql,
+    write_tests_jsonl,
+)
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
 
@@ -452,6 +460,14 @@ def parse_args() -> argparse.Namespace:
         help="Skip the vision-LLM fallback that reads text off of image-only "
         "pptx slides (slides with a picture and essentially no extractable text). "
         "Vision calls use the same model and API key as the text extraction.",
+    )
+    p.add_argument(
+        "--no-tests-upload",
+        action="store_true",
+        help="Skip pushing structured rows for test-section slides to the "
+        "llm_monitor.historical_tests MySQL table. The rows are still "
+        "extracted and written to tests.jsonl, and each test slide's "
+        "detail is still replaced with the MySQL pointer marker.",
     )
     p.add_argument(
         "--diagnose-shapes",
@@ -954,6 +970,16 @@ def main() -> None:
         records.append(record)
         text_lines_by_slide[record["slide_id"]] = layout.text_lines
 
+    # Capture intro slide ids BEFORE section propagation pops the flag —
+    # a "Live tests" intro slide's `section` is set to the intro title
+    # itself, so `is_test_section("Live tests")` matches the intro just as
+    # readily as it matches the content slides that inherit that section.
+    # We keep the ids around so the test-row extraction loop can skip them.
+    intro_slide_ids: set[str] = (
+        {r["slide_id"] for r in records if r.get("is_section_intro")}
+        if is_pptx
+        else set()
+    )
     if is_pptx:
         _propagate_sections_from_intros(records)
     else:
@@ -968,6 +994,103 @@ def main() -> None:
         _dedupe_detail(record)
 
     records = [_reorder_record(r) for r in records]
+
+    # Test-section slides get projected onto the historical_tests table
+    # schema, uploaded to MySQL, and have their JSONL detail replaced with
+    # a pointer marker so the RAG pipeline doesn't re-embed the same
+    # content twice. Runs after section propagation so a content slide
+    # correctly picks up its intro slide's "Live tests" / "Blocked tests"
+    # / etc. section.
+    test_rows: list[dict] = []
+    import_date = today_iso()
+    test_candidates = [r for r in records if is_test_section(r.get("section", ""))]
+
+    # De-duplicate consecutive slides that share (section, sub_section). A
+    # test — especially under 'Concluded tests' — is often split across two
+    # adjacent slides: the first carries background, the second carries the
+    # hypothesis + results. Only the LAST slide of each same-title run
+    # holds the authoritative row, so drop the earlier siblings. Empty
+    # sub_sections don't fuse — they'd collapse unrelated title-less slides
+    # together.
+    deduped: list[dict] = []
+    skipped_paired = 0
+    for i, r in enumerate(test_candidates):
+        section = r.get("section", "") or ""
+        title = (r.get("sub_section", "") or "").strip().casefold()
+        if not title:
+            deduped.append(r)
+            continue
+        j = i + 1
+        while j < len(test_candidates):
+            nxt = test_candidates[j]
+            if (nxt.get("section", "") or "") != section:
+                break
+            if (nxt.get("sub_section", "") or "").strip().casefold() != title:
+                break
+            j += 1
+        if j > i + 1:
+            # There is a same-title successor still in the list — this
+            # slide is the earlier half of the pair, so skip it. The
+            # loop reaches the successor on its own iteration.
+            skipped_paired += 1
+            print(
+                f"  [tests] skip {r.get('slide_id')} ({section}) — "
+                f"earlier half of a same-title pair (kept: {test_candidates[j - 1].get('slide_id')})"
+            )
+            continue
+        deduped.append(r)
+    test_candidates = deduped
+
+    skipped_intro = skipped_empty = 0
+    section_counts: dict[str, int] = {}
+    for record in test_candidates:
+        section = record.get("section", "")
+        section_counts[section] = section_counts.get(section, 0) + 1
+    if test_candidates or skipped_paired:
+        summary = ", ".join(f"{k}: {v}" for k, v in sorted(section_counts.items()))
+        print(
+            f"[tests] {len(test_candidates)} candidate slide(s) under test sections — {summary}"
+            + (f" (+{skipped_paired} earlier-half pair(s) skipped)" if skipped_paired else "")
+        )
+
+    for record in test_candidates:
+        sid = record.get("slide_id", "?")
+        section = record.get("section", "")
+        if record.get("slide_id") in intro_slide_ids:
+            skipped_intro += 1
+            print(f"  [tests] skip {sid} ({section}) — section-intro slide")
+            continue
+        # An intro slide has its `detail` cleared and no `sub_section` body
+        # by design — treat any content-empty record under a test section as
+        # an intro too, in case a non-pptx path (or a future intro without
+        # the flag) sneaks through.
+        if not record.get("detail") and not record.get("sub_section"):
+            skipped_empty += 1
+            print(f"  [tests] skip {sid} ({section}) — no detail and no sub_section")
+            continue
+        try:
+            row = extract_test_row(client, settings.openai_model, record, import_date)
+        except Exception as e:
+            print(f"  ! test-row extraction failed for {sid} ({section}): {e}")
+            continue
+        test_rows.append(row)
+        record["detail"] = make_detail_marker(row)
+        print(f"  [tests] extracted {sid} ({section}) -> {row['issueKey']}")
+
+    if test_candidates:
+        print(
+            f"[tests] summary: {len(test_rows)} extracted, "
+            f"{skipped_intro} intro, {skipped_empty} empty out of {len(test_candidates)} candidates"
+        )
+
+    if test_rows:
+        tests_out = per_file_dir / "tests.jsonl"
+        write_tests_jsonl(test_rows, tests_out)
+        if not args.no_tests_upload:
+            try:
+                upload_rows_to_mysql(test_rows, settings)
+            except Exception as e:
+                print(f"  ! MySQL upload failed: {e}")
 
     if args.dry_run:
         for r in records:

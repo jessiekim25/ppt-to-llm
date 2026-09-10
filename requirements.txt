@@ -5,3 +5,4 @@ pdfplumber>=0.11
 python-pptx>=1.0
 boto3>=1.34
 Pillow>=10.0
+pymysql>=1.1
