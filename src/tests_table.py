@@ -81,11 +81,19 @@ APPROVED_COMPONENTS: tuple[str, ...] = (
 
 PRODUCT_EXAMPLES: tuple[str, ...] = (
     "TV",
-    "DA",
     "Tablet",
+    "Monitor",
     "Paradigm",
     "Flip7/Fold7",
     "B7Q7",
+    "Galaxy Watch",
+    "DA",
+    "Laundry",
+    "Refrigerator",
+    "Vacuum Cleaner",
+    "Galaxy Book",
+    "MX",
+    "CE",
     "Total",
 )
 

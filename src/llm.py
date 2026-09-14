@@ -389,9 +389,15 @@ APPROVED CONCEPTS — `concept` MUST be an exact match from this list (case, pun
 APPROVED COMPONENTS — each entry of `component` MUST be an exact match from this list. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
 {COMPONENTS_LIST}
 
-PRODUCT EXAMPLES — these are common product groups but the list is NOT exhaustive. If the slide mentions a specific product (e.g. "Galaxy S26", "QLED 8K", "Bespoke Fridge") that isn't listed, include the product's name AS PRINTED on the slide — do NOT force-map it to something on the list:
+PRODUCT EXAMPLES — `product` is the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE: if the slide names a concrete model (e.g. "Galaxy S26 Ultra", "QLED 8K 75\"", "Bespoke Jet Vacuum"), include it AS PRINTED — do NOT force-map it to a bucket on this list. These entries are common buckets, not an exhaustive filter:
 {PRODUCTS_LIST}
-When the slide does not mention any specific product group, use ["Total"] (the catch-all).
+
+AGGREGATED-PRODUCT BUCKETS (use ONLY when the slide's target genuinely spans a whole family and no single model is specified):
+- Test across ALL Galaxy smartphone series / across Galaxy purchases without naming a model → `["MX"]`.
+- Test across ALL home appliance products (fridges + washers + vacuums + …) without naming one → `["DA"]`.
+- Test across BOTH TV and DA (a Consumer Electronics-wide campaign) → `["CE"]`.
+- No specific product group mentioned anywhere → `["Total"]` (the site-wide catch-all).
+A test that names a specific model or a narrow family (e.g. "Galaxy Flip7") uses that name — do NOT roll it up to MX / DA / CE / Total.
 
 APPROVED KPIS — each entry of `kpi` MUST be an exact match from this list:
 - CVR
@@ -405,7 +411,7 @@ RULES:
 2. `test_name` — default to the slide's `sub_section` verbatim. Override only if the slide's content or notes clearly names the test differently (e.g. an "Experiment ID" or a "Test: X" label whose text differs from the slide title). Never leave it null.
 3. `kpi` is one combined, de-duplicated list — put every KPI the slide names (primary and secondary alike) in the same array. Must contain AT LEAST ONE value: if the slide names a metric not in the approved list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Never emit `[]`.
 4. `component` — infer from where the test runs / where the change is shown on the site. Multiple pages qualifying → include all of them (e.g. `["Home Page", "PDP"]`). Must contain AT LEAST ONE value: when the location is unclear, use `["Multiple"]`. Never emit `[]`.
-5. `product` — infer from the product group being tested. Multiple product groups → include all of them. Must contain AT LEAST ONE value: use `["Total"]` when no specific product is mentioned. Products outside the PRODUCT EXAMPLES list are welcome — include them as printed. Never emit `[]`.
+5. `product` — the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE. Multiple products → include all of them. Must contain AT LEAST ONE value: use the AGGREGATED-PRODUCT BUCKETS above (`MX` / `DA` / `CE` / `Total`) ONLY when the target genuinely spans the whole family without naming a model. A specific model always beats a bucket. Products outside PRODUCT EXAMPLES are welcome — include them as printed. Never emit `[]`.
 6. `concept` — if the slide's test-type description is not on the APPROVED CONCEPTS list, choose the CLOSEST approved concept. Do not invent new concept names.
 7. If a scalar field (`target_audience`, `notes`) truly cannot be inferred from either content or notes, use `null`. But do NOT default to null just because there is no explicit label — RULES 10 and 11 below require inference from the surrounding language. `test_name`, `component`, `product`, and `kpi` are never null / never `[]`.
 8. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
