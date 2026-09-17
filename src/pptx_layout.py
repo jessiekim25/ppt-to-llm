@@ -555,6 +555,75 @@ def diagnose_slide_shapes(pptx_path: Path, slide_num: int) -> str:
     return "\n".join(out)
 
 
+def save_right_side_pictures(
+    pptx_path: Path,
+    slide_num: int,
+    out_dir: Path,
+    filename_stem: str,
+    x_center_min: float = 0.5,
+) -> list[str]:
+    """Save every picture whose bbox-center sits on the RIGHT of the slide.
+
+    On a typical test slide the left half carries text (hypothesis, KPIs)
+    and the right half carries the mockup / screenshot. We save each such
+    picture as `<filename_stem>_<idx>.<ext>` under `out_dir` and return
+    the list of basenames (relative to the slide's per-file directory)
+    in the order the shape tree exposes them.
+
+    `x_center_min` is the minimum (fractional) x-center a picture's bbox
+    must have to count as right-side; the default 0.5 uses the slide's
+    horizontal midline. Group shapes are recursed into.
+    """
+    prs = Presentation(str(pptx_path))
+    slides = list(prs.slides)
+    if slide_num < 1 or slide_num > len(slides):
+        return []
+    slide = slides[slide_num - 1]
+    slide_w = int(prs.slide_width or 0)
+    slide_h = int(prs.slide_height or 0)
+    if slide_w <= 0 or slide_h <= 0:
+        return []
+
+    pictures: list = []
+
+    def _walk(shapes) -> None:
+        for shape in shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _walk(shape.shapes)
+                continue
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
+                pictures.append(shape)
+
+    _walk(slide.shapes)
+
+    if not pictures:
+        return []
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[str] = []
+    idx = 0
+    for shape in pictures:
+        x0, y0, x1, y1 = _shape_bbox_pct(shape, slide_w, slide_h)
+        cx = (x0 + x1) / 2
+        if cx < x_center_min:
+            continue
+        try:
+            image = shape.image  # python-pptx PictureImage
+            blob = image.blob
+            ext = (image.ext or "png").lower()
+        except Exception as e:
+            print(f"  ! could not read picture on slide {slide_num}: {e}")
+            continue
+        idx += 1
+        basename = f"{filename_stem}_{idx}.{ext}"
+        (out_dir / basename).write_bytes(blob)
+        # Path stored is relative to the slide's per-file directory so it
+        # resolves the same way as `slide_image_path` in slides.jsonl.
+        saved.append(f"{out_dir.name}/{basename}")
+
+    return saved
+
+
 def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:
     """Return the speaker-notes text for a 1-indexed slide, "" if none.
 

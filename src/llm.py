@@ -373,18 +373,37 @@ You will receive a JSON payload with the slide's flattened content and its speak
 
 Return a JSON object with EXACTLY these fields (no others):
 {
-  "test_group": "<one value from the APPROVED TEST GROUPS list below, or null>",
+  "test_name": "<the test's name — usually the slide's sub_section verbatim; if the slide clearly names the test differently in its content/notes, use that>",
+  "concept": "<one value from the APPROVED CONCEPTS list below, or null>",
+  "component": ["<ONE OR MORE values from APPROVED COMPONENTS — the page type(s) or area(s) of the website where the experiment runs; NEVER []>"],
+  "product": ["<ONE OR MORE product groups being tested — see PRODUCT EXAMPLES below; NEVER []>"],
   "hypothesis": "<the slide's body text under the 'Hypothesis' subheader, verbatim; null if absent>",
-  "primary_kpi": "<one of: CVR | AOV | Engagement Rate | Add to Cart Rate | Revenue per Visitor, or null>",
-  "secondary_kpis": ["<zero or more of the same KPI values; [] if none or would duplicate primary_kpi>"],
-  "target_audience": "<who the test runs on or is aimed at — see RULE 8; null ONLY when the slide gives no signal whatsoever>",
-  "notes": "<see RULE 9 — captures test results (concluded tests), background/goals/objectives/opportunities, and caveats; null only when the slide truly has none of these beyond what the other columns cover>"
+  "kpi": ["<ONE OR MORE values from APPROVED KPIS — every KPI the test tracks (primary AND secondary), de-duplicated; NEVER []>"],
+  "target_audience": "<who the test runs on or is aimed at; NEVER []>",
+  "notes": "<see RULE 10 — captures test results (concluded tests), background/goals/objectives/opportunities, and caveats; null only when the slide truly has none of these beyond what the other columns cover>"
 }
 
-APPROVED TEST GROUPS — test_group MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
-{TEST_GROUPS_LIST}
+APPROVED CONCEPTS — `concept` MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
+{CONCEPTS_LIST}
 
-APPROVED KPIS — primary_kpi and each secondary_kpis entry MUST be an exact match from this list:
+APPROVED COMPONENTS — the common CRO page types. Prefer an exact match from this list; when the slide names a page type that isn't listed (e.g. 'My Page', 'Shop App'), include it AS PRINTED instead of forcing a match. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
+{COMPONENTS_LIST}
+
+COMPONENT ALIASES — normalize these variants to the single canonical value on the right before emitting:
+- 'PDP', 'PD', 'PD page' -> 'PD'
+- 'product pages' -> 'PF'
+
+PRODUCT EXAMPLES — `product` is the main target product group whose sales uplift the test aims to move. The example entries are common buckets, not an exhaustive filter:
+{PRODUCTS_LIST}
+
+AGGREGATED-PRODUCT BUCKETS (use ONLY when the slide's target genuinely spans a whole family and no single model is specified):
+- Test across ALL Galaxy smartphone series / across Galaxy purchases without naming a model → `['MX']`.
+- Test across multiple home appliance products (fridges, washers, vacuums...) → `['DA']`.
+- Test across BOTH TV and DA (a Consumer Electronics-wide campaign) → `['CE']`.
+- No specific product group mentioned anywhere → `['Total']` (the site-wide catch-all).
+A test that names a specific smartphone model or a narrow family (e.g. 'Galaxy Flip7') uses that name — do NOT roll it up to MX.
+
+APPROVED KPIS — each entry of `kpi` MUST be an exact match from this list:
 - CVR
 - AOV
 - Engagement Rate
@@ -392,46 +411,51 @@ APPROVED KPIS — primary_kpi and each secondary_kpis entry MUST be an exact mat
 - Revenue per Visitor
 
 RULES:
-1. Read BOTH the `content` and the `notes` when populating primary_kpi, secondary_kpis, and target_audience — a slide often puts the KPI or audience only in the memo.
-2. If the slide names a metric NOT in the approved KPI list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Do not invent new KPI names.
-3. If the slide's test-type description is not on the APPROVED TEST GROUPS list, choose the CLOSEST approved group. Do not invent new group names.
-4. secondary_kpis must be an empty list `[]` if none are mentioned, or if the only candidate would duplicate `primary_kpi`.
-5. If any field truly cannot be inferred from either content or notes, use `null` (empty list `[]` for secondary_kpis). But do NOT default to null just because there is no explicit label — RULES 8 and 9 below require inference from the surrounding language.
-6. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
+1. Read BOTH the `content` and the `notes` when populating kpi, component, product, and target_audience.
+2. `test_name` — default to the slide's `sub_section` verbatim. Never leave it null.
+3. `kpi` — Must contain AT LEAST ONE value: if the slide names a metric not in the approved list (e.g. 'click-through rate', 'session engagement'), map it to the CLOSEST approved KPI. Never emit `[]`.
+4. `component` — the page or area of the site WHERE THE A/B TEST IS APPLIED, i.e. where the experiment shows the variant. Multiple pages truly carrying the variant → include all of them (e.g. `['Home Page', 'PD']`). Never emit `[]`. Things to note:
+    a) Do NOT include pages that only sit on the user's journey INTO the tested page. Example: "when consumers visit page A then return to page B, we apply changes in B" → `component = ['B']`, not `['A', 'B']`.
+    b) 'Phone contract' section is likely to be located in buy page
+5. `product` — the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE. Multiple products → include all of them. Never emit `[]`. Must contain AT LEAST ONE value: 
+    a) use the AGGREGATED-PRODUCT BUCKETS above (`MX` / `DA` / `CE` / `Total`) ONLY when the target genuinely spans the whole family without naming a model.
+    b) When the slide's title / test name (`sub_section`) contains a Samsung product code like "B7Q7", "Q7B7", emit that code verbatim as the product.
+6. `concept` — if the slide's test-type description is not on the APPROVED CONCEPTS list, choose the CLOSEST approved concept. Do not invent new concept names.
+7. `target_audience` — keep it CONCISE — a short phrase copying the slide's own wording where possible. If the field truly cannot be inferred from either content or notes, use `all users`. Things to note:
+    a) Do NOT derive an audience from which page the user is on or which journey step they came from 
+    b) Do NOT infer an audience from the product being tested (e.g., "Samsung TV buyers"). If the only audience signal on the slide is that users are returning (not new), emit `"returning users"`. Otherwise, when no qualifying gate is named in either content or notes, emit `"all users"`. Never emit `[]` or null.
+8. `notes` - hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
 
-7. TEST RESULTS — concluded tests share a repeating three-slot layout (an uplift/lift figure, a revenue/monetary figure, and a short learnings paragraph — each typically next to an icon). Capture EVERY slot you can find, in the slide OR its notes:
-   a) Uplift / lift / significance figures — "+18% CVR Uplift", "+3.2% ATC", "flat", "no impact", "stat sig at 95%".
-   b) Revenue / monetary impact — "£109K so far", "$1.2M projected", "+£40 AOV".
-   c) Learnings / analysis paragraph — verbatim (or tightened to essentials): the "whilst / however / because" sentence that explains what happened (e.g. "Whilst this test produced an orders uplift, there was no improvement in the % of users taking out the finance proposition").
-   d) Verdicts / next steps — "winner", "rolled out to 100%", "iterate", "kill", "hold".
-   Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one. Example for the example slide above:
-     "Result: +18% CVR Uplift; £109K revenue so far; Orders uplift observed, but no improvement in % of users taking out finance proposition — finance-option volumes minimal (<50) with no orders in either experience"
-   If the slide ALSO has caveats/exclusions AND background (RULE 9), append them before the Result clause with " | " between segments:
+9. TEST RESULTS — concluded tests share a repeating three-slot layout (an uplift/lift figure, a revenue/monetary figure, and a short learnings paragraph — each typically next to an icon). Capture EVERY slot you can find, in the slide OR its notes:
+   Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one.
+   If the slide ALSO has caveats/exclusions AND background (RULE 11), append them before the Result clause with " | " between segments:
      "Goal: ... | Caveats: ... | Result: ..."
-   If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 9. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', 'Wrapped tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
+   If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 10. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
 
-8. TARGET AUDIENCE — populate this whenever the slide gives ANY signal about who the test aims at, not just when a "Target audience" label appears. Sources to mine, in order of precedence:
-   a) An explicit audience/segmentation line ("mobile users", "logged-in customers", "returning US visitors").
-   b) The Background or Objective paragraph: language like "we aim to encourage more customers to ...", "for shoppers who ...", "users considering finance", "prospects browsing the configurator" — infer the implied audience from what the test is trying to influence.
-   c) Product/scheme context: a trade-in scheme test implies "users with an eligible old device to trade in"; a finance-configurator test implies "shoppers considering finance on <product line>"; a mobile-only banner test implies "mobile visitors".
-   d) The slide's speaker notes.
-   Keep it CONCISE (a short noun phrase, e.g. "Samsung TV shoppers considering finance", "Users with an eligible old Galaxy phone to trade in", "Mobile visitors on the PDP"). Use null ONLY when the slide has zero audience-shaped signal in ANY of the above — not because the word "audience" is missing.
-
-9. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
-   a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
-   b) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
-   c) `Result: ...` clause when RULE 7 applies (concluded tests / results section).
-   d) Any other short piece of speaker-note context that isn't already in another column (test-run window, exposure %, rollout plan, follow-up test link).
-   Keep each segment tight — one sentence or a short semicolon-separated list. Skip a segment when it would add nothing. Use null only when there is genuinely nothing meaningful outside the other columns.
+10. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
+    a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
+    b) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
+    c) `Result: ...` clause when RULE 9 applies (concluded tests / results section).
+    d) Any other short piece of speaker-note context that isn't already in another column (test-run window, exposure %, rollout plan, follow-up test link).
+    Keep each segment tight — one sentence or a short semicolon-separated list. Skip a segment when it would add nothing. Use null only when there is genuinely nothing meaningful outside the other columns.
 
 Return ONLY the JSON object. No prose, no code fences."""
 
 
-def extract_test_metadata(client: OpenAI, model: str, payload: dict, test_groups: list[str]) -> dict:
-    """Ask the LLM to project one test slide onto the historical_tests table schema."""
-    system_prompt = TEST_EXTRACTION_PROMPT.replace(
-        "{TEST_GROUPS_LIST}",
-        "\n".join(f"- {g}" for g in test_groups),
+def extract_test_metadata(
+    client: OpenAI,
+    model: str,
+    payload: dict,
+    concepts: list[str],
+    components: list[str],
+    products: list[str],
+) -> dict:
+    """Ask the LLM to project one test slide onto the historical_test table schema."""
+    system_prompt = (
+        TEST_EXTRACTION_PROMPT
+        .replace("{CONCEPTS_LIST}", "\n".join(f"- {c}" for c in concepts))
+        .replace("{COMPONENTS_LIST}", "\n".join(f"- {c}" for c in components))
+        .replace("{PRODUCTS_LIST}", "\n".join(f"- {p}" for p in products))
     )
     response = client.chat.completions.create(
         model=model,

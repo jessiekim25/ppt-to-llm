@@ -3,21 +3,26 @@
 A slide whose (propagated) `section` names a "test" bucket — e.g. "Live tests",
 "Flagship tests", "Upcoming tests", "Blocked tests" — carries one experiment's
 spec. Instead of leaving that spec buried in free-form `detail` blocks, we
-ask the LLM to project it onto the fixed `llm_monitor.historical_tests` table
+ask the LLM to project it onto the fixed `cro.historical_test` table
 schema, INSERT the resulting row, and replace the slide's `detail` in
 slides.jsonl with a single-block marker pointing at the MySQL table so the
 downstream RAG pipeline doesn't re-embed the same content in two places.
 
 Table schema (column order matches the target table):
 
-  issueKey         : slide_id + section        (primary key)
-  test_name        : sub_section
-  test_group       : one of TEST_GROUPS
+  source           : slide_id + section        (primary key)
+  target_activity  : always None for now — reserved for later hand-tagging
+  test_name        : LLM-emitted test name (defaults to sub_section)
+  concept          : one of CONCEPTS
+  component        : non-empty list of components - APPROVED_COMPONENTS is guidance but not exhaustive (JSON-encoded in MySQL)
+  product          : non-empty list of product names — PRODUCT_EXAMPLES are
+                     common buckets but free-form values (e.g. 'Galaxy S26')
+                     are kept as-is (JSON-encoded in MySQL)
   hypothesis       : slide body under 'Hypothesis' subheader
-  primary_kpi      : one of APPROVED_KPIS
-  secondary_kpis   : list of APPROVED_KPIS (JSON-encoded in MySQL)
+  kpi              : non-empty list of APPROVED_KPIS (JSON-encoded in MySQL)
   target_audience  : free text
   notes            : caveats / exclusions / watch-outs
+  image_path       : list of saved right-side image paths (JSON-encoded in MySQL)
   importDate       : ISO date of the extraction run
 """
 
@@ -34,68 +39,113 @@ if TYPE_CHECKING:  # avoids an import at runtime just for type hints
 TEST_TABLE_NAME = "cro.historical_test"
 
 TEST_COLUMNS: tuple[str, ...] = (
-    "issueKey",
+    "source",
+    "target_activity",
     "test_name",
-    "test_group",
+    "concept",
+    "component",
+    "product",
     "hypothesis",
-    "primary_kpi",
-    "secondary_kpis",
+    "kpi",
     "target_audience",
     "notes",
+    "image_path",
     "importDate",
 )
 
+# Columns whose Python value is a list — they're JSON-encoded on the way to MySQL.
+_LIST_COLUMNS: frozenset[str] = frozenset({"component", "product", "kpi", "image_path"})
+
 APPROVED_KPIS: tuple[str, ...] = (
-    "CVR",
-    "AOV",
-    "Engagement Rate",
-    "Add to Cart Rate",
-    "Revenue per Visitor",
+    'CVR',
+    'AOV',
+    'Engagement Rate',
+    'Add to Cart Rate',
+    'Revenue per Visitor',
 )
 
-TEST_GROUPS: tuple[str, ...] = (
-    "Abandoned Cart & Journey Recovery",
-    "Above-the-Fold & Hero Optimisation",
-    "App Promotion",
-    "Bundles & Add-ons Optimisation",
-    "Checkout & Payment Enhancement",
-    "Configurator & Product Enhancement",
-    "Content & Visibility Enhancement",
-    "Countdowns & Urgency",
-    "Birthday Campaign",
-    "Device & Model Personalisation",
-    "EPP Experience & Messaging",
-    "Finance, Pricing & Contracts",
-    "Gifts, Savings & Vouchers",
-    "Gallery, Video & Visual Content Enhancement",
-    "Launch & Pre-Order Optimisation",
-    "Reward, Loyalty & Incentive Signposting",
-    "User Journey & Navigation Adjustments",
-    "Promotion Optimisation",
-    "VIP Personalisation",
-    "Personalisation & Targeting",
-    "Personalised Content & Messaging",
-    "Personalised Recommendations & Affinity",
-    "Personalised Search",
-    "PDP Optimisation",
-    "Product Discovery & Selection Guidance",
-    "Promotional Banners & Messaging",
-    "Promotional Placement & Visibility",
-    "Purchase Funnel Optimisation",
-    "Recently Viewed LP",
-    "Returning User Enhancement",
-    "Security & Privacy Enhancement",
-    "Samsung Care+ Protection",
-    "OOS Recommendation",
-    "Smart Switch",
-    "Social Proof & User Reviews",
-    "Trade-In Optimisation",
-    "Upsell & Cross-Sell",
-    "SMB User Login & Registration",
-    "UX/UI Enhancement",
-    "KV Personalisation",
-    "Paradigm EUG",
-    "Post-Purchase Experience",
+APPROVED_COMPONENTS: tuple[str, ...] = (
+    'Buy Page',
+    'Handraisers',
+    'Home Page',
+    'Landing Page',
+    'Multiple',
+    'Offer Page',
+    'PCD',
+    'PD-MMP',
+    'PD',
+    'PF',
+)
+
+PRODUCT_EXAMPLES: tuple[str, ...] = (
+    'TV',
+    'Tablet',
+    'Monitor',
+    'Paradigm',
+    'Flip7/Fold7',
+    'B7Q7',
+    'Galaxy Watch',
+    'DA',
+    'Laundry',
+    'Refrigerator',
+    'Vacuum Cleaner',
+    'Galaxy Book',
+    'MX',
+    'CE',
+    'Total',
+)
+
+# Fallback used when the LLM leaves `product` empty. "Total" is the
+# catch-all in PRODUCT_EXAMPLES — the schema requires ≥1 value.
+_PRODUCT_FALLBACK = 'Total'
+
+# Fallback used when the LLM leaves `component` empty. "Multiple" is the
+# catch-all in APPROVED_COMPONENTS — the schema requires ≥1 value.
+_COMPONENT_FALLBACK = 'Multiple'
+
+CONCEPTS: tuple[str, ...] = (
+    'Abandoned Cart & Journey Recovery',
+    'Above-the-Fold & Hero Optimisation',
+    'App Promotion',
+    'Bundles & Add-ons Optimisation',
+    'Checkout & Payment Enhancement',
+    'Configurator & Product Enhancement',
+    'Content & Visibility Enhancement',
+    'Countdowns & Urgency',
+    'Birthday Campaign',
+    'Device & Model Personalisation',
+    'EPP Experience & Messaging',
+    'Finance, Pricing & Contracts',
+    'Gifts, Savings & Vouchers',
+    'Gallery, Video & Visual Content Enhancement',
+    'Launch & Pre-Order Optimisation',
+    'Reward, Loyalty & Incentive Signposting',
+    'User Journey & Navigation Adjustments',
+    'Promotion Optimisation',
+    'VIP Personalisation',
+    'Personalisation & Targeting',
+    'Personalised Content & Messaging',
+    'Personalised Recommendations & Affinity',
+    'Personalised Search',
+    'PDP Optimisation',
+    'Product Discovery & Selection Guidance',
+    'Promotional Banners & Messaging',
+    'Promotional Placement & Visibility',
+    'Purchase Funnel Optimisation',
+    'Recently Viewed LP',
+    'Returning User Enhancement',
+    'Security & Privacy Enhancement',
+    'Samsung Care+ Protection',
+    'OOS Recommendation',
+    'Smart Switch',
+    'Social Proof & User Reviews',
+    'Trade-In Optimisation',
+    'Upsell & Cross-Sell',
+    'SMB User Login & Registration',
+    'UX/UI Enhancement',
+    'KV Personalisation',
+    'Paradigm EUG',
+    'Post-Purchase Experience',
 )
 
 _TEST_SECTION_RE = re.compile(r"\btests?\b", re.IGNORECASE)
@@ -153,11 +203,98 @@ def _coerce_kpi(value: object) -> str | None:
     return v if v in APPROVED_KPIS else None
 
 
-def _coerce_group(value: object) -> str | None:
+def _coerce_concept(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     v = value.strip()
-    return v if v in TEST_GROUPS else None
+    return v if v in CONCEPTS else None
+
+
+def _as_string_list(value: object) -> list[str]:
+    """Return `value` normalized to a list[str] of trimmed non-empty strings.
+
+    Accepts either a single string or a list of strings — LLMs sometimes
+    emit a scalar when only one value applies even though the schema asks
+    for a list.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw: list = [value]
+    elif isinstance(value, list):
+        raw = value
+    else:
+        return []
+    out: list[str] = []
+    for v in raw:
+        if not isinstance(v, str):
+            continue
+        s = v.strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _coerce_from_list(value: object, approved: tuple[str, ...]) -> list[str]:
+    """De-duplicated list restricted to `approved` values (drops the rest)."""
+    approved_set = set(approved)
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
+        if s in approved_set and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _coerce_products(value: object) -> list[str]:
+    """De-duplicated list of product names — approved list is EXAMPLES, not a filter.
+
+    A specific product mentioned on the slide (e.g. "Galaxy S26", "QLED 8K")
+    that isn't in PRODUCT_EXAMPLES is still kept verbatim — the column is
+    meant to hold whichever product the test targets, not just the buckets.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+# Component-name aliases (case-insensitive lookup)
+_COMPONENT_ALIASES: dict[str, str] = {
+    'pd': 'PD',
+    'pd page': 'PD',
+    'pd pages': 'PD',
+    'product pages': 'PF',
+
+}
+
+
+def _normalize_component(value: str) -> str:
+    """Apply COMPONENT_ALIASES; case-insensitive lookup, returns canonical form."""
+    key = " ".join(value.strip().lower().split())
+    return _COMPONENT_ALIASES.get(key, value.strip())
+
+
+def _coerce_components(value: object) -> list[str]:
+    """De-duplicated list of component names — approved list is guidance, not a filter.
+
+    A page type the slide names but that isn't on APPROVED_COMPONENTS
+    (e.g. "My Page", "Shop App") is kept verbatim so downstream can see
+    what page the test really targeted. Alias variants like "PD" or
+    "PD pages" collapse into their canonical "PD" before dedup.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
+        canonical = _normalize_component(s)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            out.append(canonical)
+    return out
 
 
 def _coerce_str_or_none(value: object) -> str | None:
@@ -169,41 +306,74 @@ def _coerce_str_or_none(value: object) -> str | None:
     return str(value).strip() or None
 
 
-def build_test_row(record: dict, extracted: dict, import_date: str) -> dict:
+def build_test_row(
+    record: dict,
+    extracted: dict,
+    import_date: str,
+    image_paths: list[str] | None = None,
+) -> dict:
     """Assemble a fixed-schema row from a slide record + LLM extraction.
 
     Approved-list validation happens HERE — the LLM is instructed to pick
-    from the lists, but any drift is coerced to None rather than shipped
-    to MySQL.
+    from the lists, but any drift is coerced away rather than shipped to
+    MySQL. `image_paths` is the list of right-side image paths the caller
+    already saved to disk for this test slide (may be empty).
     """
     slide_id = str(record.get("slide_id", "") or "").strip()
     section = str(record.get("section", "") or "").strip()
     sub_section = str(record.get("sub_section", "") or "").strip()
 
-    primary = _coerce_kpi(extracted.get("primary_kpi"))
-    seen: set[str] = set()
-    secondary: list[str] = []
-    for k in extracted.get("secondary_kpis") or []:
-        norm = _coerce_kpi(k)
-        if not norm or norm == primary or norm in seen:
-            continue
-        seen.add(norm)
-        secondary.append(norm)
+    # kpi is now one combined list — prefer the LLM's `kpi` field, but fall
+    # back to the legacy primary_kpi/secondary_kpis shape if the model still
+    # emits it, so a stale prompt won't silently drop KPI values.
+    kpi_raw = extracted.get("kpi")
+    if kpi_raw is None:
+        kpi_raw = []
+        primary = extracted.get("primary_kpi")
+        if primary is not None:
+            kpi_raw.append(primary)
+        for k in extracted.get("secondary_kpis") or []:
+            kpi_raw.append(k)
+    kpi = _coerce_from_list(kpi_raw, APPROVED_KPIS)
+
+    component = _coerce_components(extracted.get("component"))
+    if not component:
+        # Schema requires ≥1 value; fall back to the catch-all rather than []
+        # so the column is never blank.
+        component = [_COMPONENT_FALLBACK]
+
+    product = _coerce_products(extracted.get("product"))
+    if not product:
+        product = [_PRODUCT_FALLBACK]
+
+    # test_name defaults to the slide's sub_section — the LLM may override
+    # only when the slide clearly names the test differently.
+    llm_test_name = _coerce_str_or_none(extracted.get("test_name"))
+    test_name = llm_test_name or (sub_section or None)
 
     return {
-        "issueKey": f"{slide_id}_{section}" if section else slide_id,
-        "test_name": sub_section or None,
-        "test_group": _coerce_group(extracted.get("test_group")),
+        "source": f"{slide_id}_{section}" if section else slide_id,
+        "target_activity": None,
+        "test_name": test_name,
+        "concept": _coerce_concept(extracted.get("concept") or extracted.get("test_group")),
+        "component": component,
+        "product": product,
         "hypothesis": _coerce_str_or_none(extracted.get("hypothesis")),
-        "primary_kpi": primary,
-        "secondary_kpis": secondary,
+        "kpi": kpi,
         "target_audience": _coerce_str_or_none(extracted.get("target_audience")),
         "notes": _coerce_str_or_none(extracted.get("notes")),
+        "image_path": list(image_paths or []),
         "importDate": import_date,
     }
 
 
-def extract_test_row(client: "OpenAI", model: str, record: dict, import_date: str) -> dict:
+def extract_test_row(
+    client: "OpenAI",
+    model: str,
+    record: dict,
+    import_date: str,
+    image_paths: list[str] | None = None,
+) -> dict:
     """LLM-extract a test slide's fields and return a validated row dict."""
     from .llm import extract_test_metadata
 
@@ -213,32 +383,39 @@ def extract_test_row(client: "OpenAI", model: str, record: dict, import_date: st
         "content": _flatten_record(record),
         "notes": _extract_slide_note(record),
     }
-    extracted = extract_test_metadata(client, model, payload, list(TEST_GROUPS))
-    return build_test_row(record, extracted, import_date)
+    extracted = extract_test_metadata(
+        client,
+        model,
+        payload,
+        concepts=list(CONCEPTS),
+        components=list(APPROVED_COMPONENTS),
+        products=list(PRODUCT_EXAMPLES),
+    )
+    return build_test_row(record, extracted, import_date, image_paths=image_paths)
 
 
 def make_detail_marker(row: dict) -> list[dict]:
     """Return the placeholder `detail` block that replaces a test slide's body.
 
     Anyone reading slides.jsonl learns the row is authoritative in MySQL and
-    is handed the issueKey to look it up.
+    is handed the source key to look it up.
     """
     return [
         {
             "body": (
                 f"Test metadata for this slide is stored in MySQL table "
-                f"`{TEST_TABLE_NAME}` under issueKey={row['issueKey']!r}."
+                f"`{TEST_TABLE_NAME}` under source={row['source']!r}."
             )
         }
     ]
 
 
 def upload_rows_to_mysql(rows: list[dict], settings) -> None:
-    """Upsert every row into cro.historical_test keyed by issueKey.
+    """Upsert every row into cro.historical_test keyed by source.
 
     Uses INSERT ... ON DUPLICATE KEY UPDATE so a re-extract of the same
-    file overwrites the earlier row for the same issueKey instead of
-    inserting a duplicate. This requires `issueKey` to be the PRIMARY
+    file overwrites the earlier row for the same source instead of
+    inserting a duplicate. This requires `source` to be the PRIMARY
     KEY or carry a UNIQUE index; without one, the ON DUPLICATE branch
     never fires and rows accumulate.
 
@@ -280,7 +457,7 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         placeholders = ", ".join(["%s"] * len(TEST_COLUMNS))
         # Every non-key column is refreshed from the incoming row on conflict.
         updates = ", ".join(
-            f"`{c}`=VALUES(`{c}`)" for c in TEST_COLUMNS if c != "issueKey"
+            f"`{c}`=VALUES(`{c}`)" for c in TEST_COLUMNS if c != "source"
         )
         sql = (
             f"INSERT INTO {TEST_TABLE_NAME} ({cols}) VALUES ({placeholders}) "
@@ -288,7 +465,7 @@ def upload_rows_to_mysql(rows: list[dict], settings) -> None:
         )
         values = [
             tuple(
-                json.dumps(r[c], ensure_ascii=False) if c == "secondary_kpis" else r[c]
+                json.dumps(r[c], ensure_ascii=False) if c in _LIST_COLUMNS else r[c]
                 for c in TEST_COLUMNS
             )
             for r in rows

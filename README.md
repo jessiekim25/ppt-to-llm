@@ -205,25 +205,29 @@ Slides whose propagated `section` names a test bucket — e.g. `Live tests`, `Fl
 
 For each test slide the extractor:
 
-1. Sends the flattened slide content + speaker notes to the LLM with the `historical_tests` schema and the approved-value lists (test groups, KPIs).
-2. Coerces any drift — a `test_group` or `primary_kpi` that isn't an exact match from the approved list is dropped to `null` rather than shipped.
-3. Writes one row per test slide to `<per-file-dir>/tests.jsonl` with the column order below.
-4. `REPLACE INTO cro.historical_test` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured).
-5. Replaces the slide's `detail` in `slides.jsonl` with a single-block pointer marker naming the MySQL table and `issueKey`, so downstream RAG doesn't re-embed the same content twice.
+1. Sends the flattened slide content + speaker notes to the LLM with the `cro.historical_test` schema and the approved-value lists (concepts, components, products, KPIs).
+2. Coerces any drift — a `concept`, `component`, `product`, or `kpi` value that isn't an exact match from its approved list is dropped rather than shipped.
+3. Saves every picture on the slide's right half (bbox-center x ≥ 0.5) to `<per-file-dir>/test_images/test_<slide-num>_<i>.<ext>` — the paths land in the row's `image_path` column so downstream can render the mockup next to the extracted fields.
+4. Writes one row per test slide to `<per-file-dir>/tests.jsonl` with the column order below.
+5. `REPLACE INTO cro.historical_test` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured). List-valued columns (`component`, `product`, `kpi`, `image_path`) are JSON-encoded on the way to MySQL.
+6. Replaces the slide's `detail` in `slides.jsonl` with a single-block pointer marker naming the MySQL table and `source` key, so downstream RAG doesn't re-embed the same content twice.
 
 Table columns (order matches MySQL and `tests.jsonl`):
 
-| column            | value                                                                                    |
-| ----------------- | ---------------------------------------------------------------------------------------- |
-| `issueKey`        | `slide_id + "_" + section` — primary key                                                 |
-| `test_name`       | slide's `sub_section`                                                                    |
-| `test_group`      | one of the approved test-group labels (see `src/tests_table.py`), else `null`            |
-| `hypothesis`      | body under the slide's `Hypothesis` subheader, verbatim                                  |
-| `primary_kpi`     | one of `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor`        |
-| `secondary_kpis`  | list of the same set (JSON-encoded in MySQL); `[]` if empty or would duplicate primary   |
-| `target_audience` | free text (e.g. `all users`, `mobile only`)                                              |
-| `notes`           | caveats / exclusions / watch-outs — `null` if none                                       |
-| `importDate`      | ISO date of the extraction run                                                           |
+| column             | value                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `source`           | `slide_id + "_" + section` — primary key                                                                     |
+| `target_activity`  | reserved for later hand-tagging — always `null` in this pipeline                                             |
+| `test_name`        | test's name — LLM-emitted, defaults to the slide's `sub_section`                                             |
+| `concept`          | one of the approved concept labels (see `src/tests_table.py`), else `null`                                   |
+| `component`        | non-empty list of the page(s) where the A/B test is *applied* — the variant's page, not journey-adjacent ones. Common values: `Buy Page`, `Handraisers`, `Home Page`, `Home PCD`, `Landing Page`, `Multiple`, `Offer Page`, `PCD`, `PD-MMP`, `PDP`, `PF`, `PFP`. Unlisted page types the slide names (e.g. `My Page`) are kept verbatim. `PD` / `PD pages` / `product detail page` normalize to `PDP`. Falls back to `["Multiple"]` when unknown |
+| `product`          | non-empty list of the main product groups whose sales uplift the test aims at — as specific as the slide allows. Common buckets: `TV`, `Tablet`, `Monitor`, `Paradigm`, `Flip7/Fold7`, `B7Q7`, `Galaxy Watch`, `DA`, `Laundry`, `Refrigerator`, `Vacuum Cleaner`, `Galaxy Book`, `MX`, `CE`, `Total`. Specific models (e.g. `Galaxy S26 Ultra`) are kept verbatim. Aggregation rules: all Galaxy smartphones (no specific model) → `MX`; all home appliances → `DA`; all TV + DA → `CE`; no specific product at all → `Total` |
+| `hypothesis`       | body under the slide's `Hypothesis` subheader, verbatim                                                      |
+| `kpi`              | non-empty, de-duplicated list of every KPI the test tracks — `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor` |
+| `target_audience`  | free text (e.g. `all users`, `mobile only`)                                                                  |
+| `notes`            | caveats / exclusions / watch-outs — `null` if none                                                           |
+| `image_path`       | list of saved right-side image paths, relative to `<per-file-dir>` (e.g. `test_images/test_042_1.png`)       |
+| `importDate`       | ISO date of the extraction run                                                                               |
 
 MySQL credentials come from a separate AWS Secrets Manager secret:
 
