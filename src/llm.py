@@ -379,29 +379,29 @@ Return a JSON object with EXACTLY these fields (no others):
   "product": ["<ONE OR MORE product groups being tested — see PRODUCT EXAMPLES below; NEVER []>"],
   "hypothesis": "<the slide's body text under the 'Hypothesis' subheader, verbatim; null if absent>",
   "kpi": ["<ONE OR MORE values from APPROVED KPIS — every KPI the test tracks (primary AND secondary), de-duplicated; NEVER []>"],
-  "target_audience": "<who the test runs on or is aimed at — see RULE 10; null ONLY when the slide gives no signal whatsoever>",
-  "notes": "<see RULE 11 — captures test results (concluded tests), background/goals/objectives/opportunities, and caveats; null only when the slide truly has none of these beyond what the other columns cover>"
+  "target_audience": "<who the test runs on or is aimed at; NEVER []>",
+  "notes": "<see RULE 10 — captures test results (concluded tests), background/goals/objectives/opportunities, and caveats; null only when the slide truly has none of these beyond what the other columns cover>"
 }
 
 APPROVED CONCEPTS — `concept` MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
 {CONCEPTS_LIST}
 
-APPROVED COMPONENTS — the common CRO page types. Prefer an exact match from this list; when the slide names a page type that isn't listed (e.g. "My Page", "Account Overview", "Compare"), include it AS PRINTED instead of forcing a match. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
+APPROVED COMPONENTS — the common CRO page types. Prefer an exact match from this list; when the slide names a page type that isn't listed (e.g. 'My Page', 'Shop App'), include it AS PRINTED instead of forcing a match. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
 {COMPONENTS_LIST}
 
-COMPONENT ALIASES — normalize these variants to the single canonical value on the left before emitting:
-- "PDP"   ← "PDP", "PD", "PD page", "PD pages", "product detail page", "product-detail page"
-Two labels that mean the same page merge into ONE component entry — do NOT emit both "PD" and "PDP" for one test.
+COMPONENT ALIASES — normalize these variants to the single canonical value on the right before emitting:
+- 'PDP', 'PD', 'PD page' -> 'PD'
+- 'product pages' -> 'PF'
 
-PRODUCT EXAMPLES — `product` is the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE: if the slide names a concrete model (e.g. "Galaxy S26 Ultra", "QLED 8K 75\"", "Bespoke Jet Vacuum"), include it AS PRINTED — do NOT force-map it to a bucket on this list. These entries are common buckets, not an exhaustive filter:
+PRODUCT EXAMPLES — `product` is the main target product group whose sales uplift the test aims to move. The example entries are common buckets, not an exhaustive filter:
 {PRODUCTS_LIST}
 
 AGGREGATED-PRODUCT BUCKETS (use ONLY when the slide's target genuinely spans a whole family and no single model is specified):
-- Test across ALL Galaxy smartphone series / across Galaxy purchases without naming a model → `["MX"]`.
-- Test across ALL home appliance products (fridges + washers + vacuums + …) without naming one → `["DA"]`.
-- Test across BOTH TV and DA (a Consumer Electronics-wide campaign) → `["CE"]`.
-- No specific product group mentioned anywhere → `["Total"]` (the site-wide catch-all).
-A test that names a specific model or a narrow family (e.g. "Galaxy Flip7") uses that name — do NOT roll it up to MX / DA / CE / Total.
+- Test across ALL Galaxy smartphone series / across Galaxy purchases without naming a model → `['MX']`.
+- Test across multiple home appliance products (fridges, washers, vacuums...) → `['DA']`.
+- Test across BOTH TV and DA (a Consumer Electronics-wide campaign) → `['CE']`.
+- No specific product group mentioned anywhere → `['Total']` (the site-wide catch-all).
+A test that names a specific smartphone model or a narrow family (e.g. 'Galaxy Flip7') uses that name — do NOT roll it up to MX.
 
 APPROVED KPIS — each entry of `kpi` MUST be an exact match from this list:
 - CVR
@@ -411,44 +411,28 @@ APPROVED KPIS — each entry of `kpi` MUST be an exact match from this list:
 - Revenue per Visitor
 
 RULES:
-1. Read BOTH the `content` and the `notes` when populating kpi, component, product, and target_audience — a slide often puts these only in the memo.
-2. `test_name` — default to the slide's `sub_section` verbatim. Override only if the slide's content or notes clearly names the test differently (e.g. an "Experiment ID" or a "Test: X" label whose text differs from the slide title). Never leave it null.
-3. `kpi` is one combined, de-duplicated list — put every KPI the slide names (primary and secondary alike) in the same array. Must contain AT LEAST ONE value: if the slide names a metric not in the approved list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Never emit `[]`.
-4. `component` — the page or area of the site WHERE THE A/B TEST IS APPLIED, i.e. where the experiment shows the variant. Do NOT include pages that only sit on the user's journey INTO the tested page. Example: "when consumers visit page A then return to page B, we change B" → `component = ["B"]`, not `["A", "B"]`. Multiple pages truly carrying the variant → include all of them (e.g. `["Home Page", "PDP"]`). Prefer an APPROVED COMPONENT; if the slide names an unlisted page (e.g. "My Page"), include it AS PRINTED. Normalize aliases per COMPONENT ALIASES above (e.g. "PD" / "PD pages" → "PDP"). Must contain AT LEAST ONE value: when the location is genuinely unclear, use `["Multiple"]`. Never emit `[]`.
-5. `product` — the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE. Multiple products → include all of them. Must contain AT LEAST ONE value: use the AGGREGATED-PRODUCT BUCKETS above (`MX` / `DA` / `CE` / `Total`) ONLY when the target genuinely spans the whole family without naming a model. A specific model always beats a bucket. Products outside PRODUCT EXAMPLES are welcome — include them as printed. Never emit `[]`.
+1. Read BOTH the `content` and the `notes` when populating kpi, component, product, and target_audience.
+2. `test_name` — default to the slide's `sub_section` verbatim. Never leave it null.
+3. `kpi` — Must contain AT LEAST ONE value: if the slide names a metric not in the approved list (e.g. 'click-through rate', 'session engagement'), map it to the CLOSEST approved KPI. Never emit `[]`.
+4. `component` — the page or area of the site WHERE THE A/B TEST IS APPLIED, i.e. where the experiment shows the variant. Multiple pages truly carrying the variant → include all of them (e.g. `['Home Page', 'PD']`). Never emit `[]`. Things to note:
+    a) Do NOT include pages that only sit on the user's journey INTO the tested page. Example: "when consumers visit page A then return to page B, we apply changes in B" → `component = ['B']`, not `['A', 'B']`.
+    b) 'Phone contract' section is likely to be located in buy page
+5. `product` — the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE. Multiple products → include all of them. Never emit `[]`. Must contain AT LEAST ONE value: 
+    a) use the AGGREGATED-PRODUCT BUCKETS above (`MX` / `DA` / `CE` / `Total`) ONLY when the target genuinely spans the whole family without naming a model.
+    b) When the slide's title / test name (`sub_section`) contains a Samsung product code like "B7Q7", "Q7B7", emit that code verbatim as the product.
 6. `concept` — if the slide's test-type description is not on the APPROVED CONCEPTS list, choose the CLOSEST approved concept. Do not invent new concept names.
-7. If a scalar field (`target_audience`, `notes`) truly cannot be inferred from either content or notes, use `null`. But do NOT default to null just because there is no explicit label — RULES 10 and 11 below require inference from the surrounding language. `test_name`, `component`, `product`, and `kpi` are never null / never `[]`.
-8. hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
+7. `target_audience` — keep it CONCISE — a short phrase copying the slide's own wording where possible. If the field truly cannot be inferred from either content or notes, use `all users`. Things to note:
+    a) Do NOT derive an audience from which page the user is on or which journey step they came from 
+    b) Do NOT infer an audience from the product being tested (e.g., "Samsung TV buyers"). If the only audience signal on the slide is that users are returning (not new), emit `"returning users"`. Otherwise, when no qualifying gate is named in either content or notes, emit `"all users"`. Never emit `[]` or null.
+8. `notes` - hypothesis is the body text directly under a subheader named "Hypothesis" (or a very close synonym). If no such subheader exists, use null — do NOT paraphrase the slide.
 
 9. TEST RESULTS — concluded tests share a repeating three-slot layout (an uplift/lift figure, a revenue/monetary figure, and a short learnings paragraph — each typically next to an icon). Capture EVERY slot you can find, in the slide OR its notes:
-   a) Uplift / lift / significance figures — "+18% CVR Uplift", "+3.2% ATC", "flat", "no impact", "stat sig at 95%".
-   b) Revenue / monetary impact — "£109K so far", "$1.2M projected", "+£40 AOV".
-   c) Learnings / analysis paragraph — verbatim (or tightened to essentials): the "whilst / however / because" sentence that explains what happened (e.g. "Whilst this test produced an orders uplift, there was no improvement in the % of users taking out the finance proposition").
-   d) Verdicts / next steps — "winner", "rolled out to 100%", "iterate", "kill", "hold".
-   Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one. Example for the example slide above:
-     "Result: +18% CVR Uplift; £109K revenue so far; Orders uplift observed, but no improvement in % of users taking out finance proposition — finance-option volumes minimal (<50) with no orders in either experience"
+   Prepend to `notes` as a `Result:` clause with items separated by `; ` (semicolons). Include the numbers VERBATIM (percent signs, currency symbols, magnitudes). Aim for one bullet per slot when present — do not collapse three findings into one.
    If the slide ALSO has caveats/exclusions AND background (RULE 11), append them before the Result clause with " | " between segments:
      "Goal: ... | Caveats: ... | Result: ..."
-   If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 11. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', 'Wrapped tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
+   If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 10. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
 
-10. TARGET AUDIENCE — populate ONLY when the slide (content or speaker notes) explicitly names a targeting/segmentation constraint on WHO the test runs on. Be strict and deterministic: this is a targeting rule, not a persona inference.
-    QUALIFYING sources (emit an audience):
-    a) An explicit "Target audience" / "Audience" / "Segmentation" / "Targeting" / "Cohort" label with its value.
-    b) A device/channel constraint on who sees the variant ("mobile only", "desktop users", "app users", "web only").
-    c) A login/account-state constraint ("logged-in customers", "returning visitors", "new visitors", "guests", "signed-out shoppers").
-    d) A geo/market constraint ("UK visitors", "US mobile", "EU5 markets").
-    e) A membership/loyalty constraint tied to an actual scheme the site enforces ("Samsung Rewards members", "EPP-eligible employees", "existing Care+ subscribers", "current trade-in scheme owners"). The scheme has to be a real gate on who is in the test, not a general marketing target.
-    f) A behavioural exposure constraint that the test itself enforces ("users who viewed a PDP in the last 7 days", "cart-abandoners", "users who searched for a Galaxy phone").
-
-    DO NOT emit an audience from any of the following — these are marketing language, not targeting rules — return `null` instead:
-    - Aspirational / persuasive language: "consumers considering finance", "shoppers looking to upgrade", "customers interested in trade-in", "loyal customers", "value-conscious buyers", "the family shopper".
-    - Persona inferences from the product being tested ("since it's a fridge test, the audience must be home-appliance shoppers").
-    - The test's goal or product context alone (e.g. "the test is about trade-in" does NOT license `"users with an eligible old device to trade in"` unless the slide actually gates the test on that condition).
-    - Vague qualifiers like "high-intent users", "engaged users", "premium shoppers" that aren't defined by an on-site signal.
-
-    Keep it CONCISE — a short noun phrase copying the slide's own wording where possible (e.g. "Mobile-only", "Logged-in customers, UK", "Samsung Rewards members", "Users with an active trade-in in cart"). Use null whenever the slide gives no qualifying signal from the QUALIFYING sources above.
-
-11. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
+10. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
     a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
     b) `Caveats: <list>` — exclusions, watch-outs, risks, dependencies, known limitations.
     c) `Result: ...` clause when RULE 9 applies (concluded tests / results section).

@@ -14,14 +14,9 @@ Table schema (column order matches the target table):
   target_activity  : always None for now — reserved for later hand-tagging
   test_name        : LLM-emitted test name (defaults to sub_section)
   concept          : one of CONCEPTS
-  component        : non-empty list of page types where the A/B test is
-                     applied. APPROVED_COMPONENTS is guidance; a page-type
-                     the slide names but that isn't in the list (e.g.
-                     "My Page") is kept verbatim, and PD / PD page /
-                     "product detail page" all normalize to "PDP"
-                     (JSON-encoded in MySQL)
+  component        : non-empty list of components - APPROVED_COMPONENTS is guidance but not exhaustive (JSON-encoded in MySQL)
   product          : non-empty list of product names — PRODUCT_EXAMPLES are
-                     common buckets but free-form values (e.g. "Galaxy S26")
+                     common buckets but free-form values (e.g. 'Galaxy S26')
                      are kept as-is (JSON-encoded in MySQL)
   hypothesis       : slide body under 'Hypothesis' subheader
   kpi              : non-empty list of APPROVED_KPIS (JSON-encoded in MySQL)
@@ -62,97 +57,95 @@ TEST_COLUMNS: tuple[str, ...] = (
 _LIST_COLUMNS: frozenset[str] = frozenset({"component", "product", "kpi", "image_path"})
 
 APPROVED_KPIS: tuple[str, ...] = (
-    "CVR",
-    "AOV",
-    "Engagement Rate",
-    "Add to Cart Rate",
-    "Revenue per Visitor",
+    'CVR',
+    'AOV',
+    'Engagement Rate',
+    'Add to Cart Rate',
+    'Revenue per Visitor',
 )
 
 APPROVED_COMPONENTS: tuple[str, ...] = (
-    "Buy Page",
-    "Handraisers",
-    "Home Page",
-    "Home PCD",
-    "Landing Page",
-    "Multiple",
-    "Offer Page",
-    "PCD",
-    "PD-MMP",
-    "PDP",
-    "PF",
-    "PFP",
+    'Buy Page',
+    'Handraisers',
+    'Home Page',
+    'Landing Page',
+    'Multiple',
+    'Offer Page',
+    'PCD',
+    'PD-MMP',
+    'PD',
+    'PF',
 )
 
 PRODUCT_EXAMPLES: tuple[str, ...] = (
-    "TV",
-    "Tablet",
-    "Monitor",
-    "Paradigm",
-    "Flip7/Fold7",
-    "B7Q7",
-    "Galaxy Watch",
-    "DA",
-    "Laundry",
-    "Refrigerator",
-    "Vacuum Cleaner",
-    "Galaxy Book",
-    "MX",
-    "CE",
-    "Total",
+    'TV',
+    'Tablet',
+    'Monitor',
+    'Paradigm',
+    'Flip7/Fold7',
+    'B7Q7',
+    'Galaxy Watch',
+    'DA',
+    'Laundry',
+    'Refrigerator',
+    'Vacuum Cleaner',
+    'Galaxy Book',
+    'MX',
+    'CE',
+    'Total',
 )
 
 # Fallback used when the LLM leaves `product` empty. "Total" is the
 # catch-all in PRODUCT_EXAMPLES — the schema requires ≥1 value.
-_PRODUCT_FALLBACK = "Total"
+_PRODUCT_FALLBACK = 'Total'
 
 # Fallback used when the LLM leaves `component` empty. "Multiple" is the
 # catch-all in APPROVED_COMPONENTS — the schema requires ≥1 value.
-_COMPONENT_FALLBACK = "Multiple"
+_COMPONENT_FALLBACK = 'Multiple'
 
 CONCEPTS: tuple[str, ...] = (
-    "Abandoned Cart & Journey Recovery",
-    "Above-the-Fold & Hero Optimisation",
-    "App Promotion",
-    "Bundles & Add-ons Optimisation",
-    "Checkout & Payment Enhancement",
-    "Configurator & Product Enhancement",
-    "Content & Visibility Enhancement",
-    "Countdowns & Urgency",
-    "Birthday Campaign",
-    "Device & Model Personalisation",
-    "EPP Experience & Messaging",
-    "Finance, Pricing & Contracts",
-    "Gifts, Savings & Vouchers",
-    "Gallery, Video & Visual Content Enhancement",
-    "Launch & Pre-Order Optimisation",
-    "Reward, Loyalty & Incentive Signposting",
-    "User Journey & Navigation Adjustments",
-    "Promotion Optimisation",
-    "VIP Personalisation",
-    "Personalisation & Targeting",
-    "Personalised Content & Messaging",
-    "Personalised Recommendations & Affinity",
-    "Personalised Search",
-    "PDP Optimisation",
-    "Product Discovery & Selection Guidance",
-    "Promotional Banners & Messaging",
-    "Promotional Placement & Visibility",
-    "Purchase Funnel Optimisation",
-    "Recently Viewed LP",
-    "Returning User Enhancement",
-    "Security & Privacy Enhancement",
-    "Samsung Care+ Protection",
-    "OOS Recommendation",
-    "Smart Switch",
-    "Social Proof & User Reviews",
-    "Trade-In Optimisation",
-    "Upsell & Cross-Sell",
-    "SMB User Login & Registration",
-    "UX/UI Enhancement",
-    "KV Personalisation",
-    "Paradigm EUG",
-    "Post-Purchase Experience",
+    'Abandoned Cart & Journey Recovery',
+    'Above-the-Fold & Hero Optimisation',
+    'App Promotion',
+    'Bundles & Add-ons Optimisation',
+    'Checkout & Payment Enhancement',
+    'Configurator & Product Enhancement',
+    'Content & Visibility Enhancement',
+    'Countdowns & Urgency',
+    'Birthday Campaign',
+    'Device & Model Personalisation',
+    'EPP Experience & Messaging',
+    'Finance, Pricing & Contracts',
+    'Gifts, Savings & Vouchers',
+    'Gallery, Video & Visual Content Enhancement',
+    'Launch & Pre-Order Optimisation',
+    'Reward, Loyalty & Incentive Signposting',
+    'User Journey & Navigation Adjustments',
+    'Promotion Optimisation',
+    'VIP Personalisation',
+    'Personalisation & Targeting',
+    'Personalised Content & Messaging',
+    'Personalised Recommendations & Affinity',
+    'Personalised Search',
+    'PDP Optimisation',
+    'Product Discovery & Selection Guidance',
+    'Promotional Banners & Messaging',
+    'Promotional Placement & Visibility',
+    'Purchase Funnel Optimisation',
+    'Recently Viewed LP',
+    'Returning User Enhancement',
+    'Security & Privacy Enhancement',
+    'Samsung Care+ Protection',
+    'OOS Recommendation',
+    'Smart Switch',
+    'Social Proof & User Reviews',
+    'Trade-In Optimisation',
+    'Upsell & Cross-Sell',
+    'SMB User Login & Registration',
+    'UX/UI Enhancement',
+    'KV Personalisation',
+    'Paradigm EUG',
+    'Post-Purchase Experience',
 )
 
 _TEST_SECTION_RE = re.compile(r"\btests?\b", re.IGNORECASE)
@@ -270,19 +263,13 @@ def _coerce_products(value: object) -> list[str]:
     return out
 
 
-# Component-name aliases (case-insensitive lookup): PD, "PD page", "PD pages",
-# "product detail page", etc. all collapse to the single canonical "PDP" so
-# one component doesn't land in the column under multiple spellings.
+# Component-name aliases (case-insensitive lookup)
 _COMPONENT_ALIASES: dict[str, str] = {
-    "pd": "PDP",
-    "pd page": "PDP",
-    "pd pages": "PDP",
-    "pdp page": "PDP",
-    "pdp pages": "PDP",
-    "product detail": "PDP",
-    "product detail page": "PDP",
-    "product-detail page": "PDP",
-    "product detail pages": "PDP",
+    'pd': 'PD',
+    'pd page': 'PD',
+    'pd pages': 'PD',
+    'product pages': 'PF',
+
 }
 
 
@@ -296,9 +283,9 @@ def _coerce_components(value: object) -> list[str]:
     """De-duplicated list of component names — approved list is guidance, not a filter.
 
     A page type the slide names but that isn't on APPROVED_COMPONENTS
-    (e.g. "My Page", "Compare") is kept verbatim so downstream can see
+    (e.g. "My Page", "Shop App") is kept verbatim so downstream can see
     what page the test really targeted. Alias variants like "PD" or
-    "PD pages" collapse into their canonical "PDP" before dedup.
+    "PD pages" collapse into their canonical "PD" before dedup.
     """
     out: list[str] = []
     seen: set[str] = set()
