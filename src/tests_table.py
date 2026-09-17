@@ -14,7 +14,12 @@ Table schema (column order matches the target table):
   target_activity  : always None for now — reserved for later hand-tagging
   test_name        : LLM-emitted test name (defaults to sub_section)
   concept          : one of CONCEPTS
-  component        : non-empty list of APPROVED_COMPONENTS (JSON-encoded in MySQL)
+  component        : non-empty list of page types where the A/B test is
+                     applied. APPROVED_COMPONENTS is guidance; a page-type
+                     the slide names but that isn't in the list (e.g.
+                     "My Page") is kept verbatim, and PD / PD page /
+                     "product detail page" all normalize to "PDP"
+                     (JSON-encoded in MySQL)
   product          : non-empty list of product names — PRODUCT_EXAMPLES are
                      common buckets but free-form values (e.g. "Galaxy S26")
                      are kept as-is (JSON-encoded in MySQL)
@@ -265,6 +270,46 @@ def _coerce_products(value: object) -> list[str]:
     return out
 
 
+# Component-name aliases (case-insensitive lookup): PD, "PD page", "PD pages",
+# "product detail page", etc. all collapse to the single canonical "PDP" so
+# one component doesn't land in the column under multiple spellings.
+_COMPONENT_ALIASES: dict[str, str] = {
+    "pd": "PDP",
+    "pd page": "PDP",
+    "pd pages": "PDP",
+    "pdp page": "PDP",
+    "pdp pages": "PDP",
+    "product detail": "PDP",
+    "product detail page": "PDP",
+    "product-detail page": "PDP",
+    "product detail pages": "PDP",
+}
+
+
+def _normalize_component(value: str) -> str:
+    """Apply COMPONENT_ALIASES; case-insensitive lookup, returns canonical form."""
+    key = " ".join(value.strip().lower().split())
+    return _COMPONENT_ALIASES.get(key, value.strip())
+
+
+def _coerce_components(value: object) -> list[str]:
+    """De-duplicated list of component names — approved list is guidance, not a filter.
+
+    A page type the slide names but that isn't on APPROVED_COMPONENTS
+    (e.g. "My Page", "Compare") is kept verbatim so downstream can see
+    what page the test really targeted. Alias variants like "PD" or
+    "PD pages" collapse into their canonical "PDP" before dedup.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in _as_string_list(value):
+        canonical = _normalize_component(s)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            out.append(canonical)
+    return out
+
+
 def _coerce_str_or_none(value: object) -> str | None:
     if value is None:
         return None
@@ -304,7 +349,7 @@ def build_test_row(
             kpi_raw.append(k)
     kpi = _coerce_from_list(kpi_raw, APPROVED_KPIS)
 
-    component = _coerce_from_list(extracted.get("component"), APPROVED_COMPONENTS)
+    component = _coerce_components(extracted.get("component"))
     if not component:
         # Schema requires ≥1 value; fall back to the catch-all rather than []
         # so the column is never blank.

@@ -386,8 +386,12 @@ Return a JSON object with EXACTLY these fields (no others):
 APPROVED CONCEPTS — `concept` MUST be an exact match from this list (case, punctuation, ampersand vs 'and' — all matter):
 {CONCEPTS_LIST}
 
-APPROVED COMPONENTS — each entry of `component` MUST be an exact match from this list. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
+APPROVED COMPONENTS — the common CRO page types. Prefer an exact match from this list; when the slide names a page type that isn't listed (e.g. "My Page", "Account Overview", "Compare"), include it AS PRINTED instead of forcing a match. When the slide is genuinely ambiguous about where the test runs, use ["Multiple"] rather than an empty list:
 {COMPONENTS_LIST}
+
+COMPONENT ALIASES — normalize these variants to the single canonical value on the left before emitting:
+- "PDP"   ← "PDP", "PD", "PD page", "PD pages", "product detail page", "product-detail page"
+Two labels that mean the same page merge into ONE component entry — do NOT emit both "PD" and "PDP" for one test.
 
 PRODUCT EXAMPLES — `product` is the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE: if the slide names a concrete model (e.g. "Galaxy S26 Ultra", "QLED 8K 75\"", "Bespoke Jet Vacuum"), include it AS PRINTED — do NOT force-map it to a bucket on this list. These entries are common buckets, not an exhaustive filter:
 {PRODUCTS_LIST}
@@ -410,7 +414,7 @@ RULES:
 1. Read BOTH the `content` and the `notes` when populating kpi, component, product, and target_audience — a slide often puts these only in the memo.
 2. `test_name` — default to the slide's `sub_section` verbatim. Override only if the slide's content or notes clearly names the test differently (e.g. an "Experiment ID" or a "Test: X" label whose text differs from the slide title). Never leave it null.
 3. `kpi` is one combined, de-duplicated list — put every KPI the slide names (primary and secondary alike) in the same array. Must contain AT LEAST ONE value: if the slide names a metric not in the approved list (e.g. "click-through rate", "session engagement"), map it to the CLOSEST approved KPI. Never emit `[]`.
-4. `component` — infer from where the test runs / where the change is shown on the site. Multiple pages qualifying → include all of them (e.g. `["Home Page", "PDP"]`). Must contain AT LEAST ONE value: when the location is unclear, use `["Multiple"]`. Never emit `[]`.
+4. `component` — the page or area of the site WHERE THE A/B TEST IS APPLIED, i.e. where the experiment shows the variant. Do NOT include pages that only sit on the user's journey INTO the tested page. Example: "when consumers visit page A then return to page B, we change B" → `component = ["B"]`, not `["A", "B"]`. Multiple pages truly carrying the variant → include all of them (e.g. `["Home Page", "PDP"]`). Prefer an APPROVED COMPONENT; if the slide names an unlisted page (e.g. "My Page"), include it AS PRINTED. Normalize aliases per COMPONENT ALIASES above (e.g. "PD" / "PD pages" → "PDP"). Must contain AT LEAST ONE value: when the location is genuinely unclear, use `["Multiple"]`. Never emit `[]`.
 5. `product` — the main target product group whose sales uplift the test aims to move. Be AS SPECIFIC AS POSSIBLE. Multiple products → include all of them. Must contain AT LEAST ONE value: use the AGGREGATED-PRODUCT BUCKETS above (`MX` / `DA` / `CE` / `Total`) ONLY when the target genuinely spans the whole family without naming a model. A specific model always beats a bucket. Products outside PRODUCT EXAMPLES are welcome — include them as printed. Never emit `[]`.
 6. `concept` — if the slide's test-type description is not on the APPROVED CONCEPTS list, choose the CLOSEST approved concept. Do not invent new concept names.
 7. If a scalar field (`target_audience`, `notes`) truly cannot be inferred from either content or notes, use `null`. But do NOT default to null just because there is no explicit label — RULES 10 and 11 below require inference from the surrounding language. `test_name`, `component`, `product`, and `kpi` are never null / never `[]`.
@@ -427,12 +431,22 @@ RULES:
      "Goal: ... | Caveats: ... | Result: ..."
    If there is no result-shaped content on the slide, skip the Result clause and just apply RULE 11. Sections that trigger result extraction: 'Concluded tests', 'Completed tests', 'Wrapped tests', or any subheader like 'Results', 'Outcome', 'Learnings', 'Impact'.
 
-10. TARGET AUDIENCE — populate this whenever the slide gives ANY signal about who the test aims at, not just when a "Target audience" label appears. Sources to mine, in order of precedence:
-    a) An explicit audience/segmentation line ("mobile users", "logged-in customers", "returning US visitors").
-    b) The Background or Objective paragraph: language like "we aim to encourage more customers to ...", "for shoppers who ...", "users considering finance", "prospects browsing the configurator" — infer the implied audience from what the test is trying to influence.
-    c) Product/scheme context: a trade-in scheme test implies "users with an eligible old device to trade in"; a finance-configurator test implies "shoppers considering finance on <product line>"; a mobile-only banner test implies "mobile visitors".
-    d) The slide's speaker notes.
-    Keep it CONCISE (a short noun phrase, e.g. "Samsung TV shoppers considering finance", "Users with an eligible old Galaxy phone to trade in", "Mobile visitors on the PDP"). Use null ONLY when the slide has zero audience-shaped signal in ANY of the above — not because the word "audience" is missing.
+10. TARGET AUDIENCE — populate ONLY when the slide (content or speaker notes) explicitly names a targeting/segmentation constraint on WHO the test runs on. Be strict and deterministic: this is a targeting rule, not a persona inference.
+    QUALIFYING sources (emit an audience):
+    a) An explicit "Target audience" / "Audience" / "Segmentation" / "Targeting" / "Cohort" label with its value.
+    b) A device/channel constraint on who sees the variant ("mobile only", "desktop users", "app users", "web only").
+    c) A login/account-state constraint ("logged-in customers", "returning visitors", "new visitors", "guests", "signed-out shoppers").
+    d) A geo/market constraint ("UK visitors", "US mobile", "EU5 markets").
+    e) A membership/loyalty constraint tied to an actual scheme the site enforces ("Samsung Rewards members", "EPP-eligible employees", "existing Care+ subscribers", "current trade-in scheme owners"). The scheme has to be a real gate on who is in the test, not a general marketing target.
+    f) A behavioural exposure constraint that the test itself enforces ("users who viewed a PDP in the last 7 days", "cart-abandoners", "users who searched for a Galaxy phone").
+
+    DO NOT emit an audience from any of the following — these are marketing language, not targeting rules — return `null` instead:
+    - Aspirational / persuasive language: "consumers considering finance", "shoppers looking to upgrade", "customers interested in trade-in", "loyal customers", "value-conscious buyers", "the family shopper".
+    - Persona inferences from the product being tested ("since it's a fridge test, the audience must be home-appliance shoppers").
+    - The test's goal or product context alone (e.g. "the test is about trade-in" does NOT license `"users with an eligible old device to trade in"` unless the slide actually gates the test on that condition).
+    - Vague qualifiers like "high-intent users", "engaged users", "premium shoppers" that aren't defined by an on-site signal.
+
+    Keep it CONCISE — a short noun phrase copying the slide's own wording where possible (e.g. "Mobile-only", "Logged-in customers, UK", "Samsung Rewards members", "Users with an active trade-in in cart"). Use null whenever the slide gives no qualifying signal from the QUALIFYING sources above.
 
 11. NOTES — the notes column is a catch-all for meaningful test context the other columns don't already carry. Populate it, in this order, joined with " | " between segments:
     a) `Goal: <one sentence>` — the test's stated goal / objective / opportunity / expected value drawn from Background. Skip if the hypothesis already fully covers it.
