@@ -622,9 +622,10 @@ def save_right_side_pictures(
         idx += 1
         basename = f"{filename_stem}_{idx}.{ext}"
         (out_dir / basename).write_bytes(blob)
-        # Path stored is relative to the slide's per-file directory so it
-        # resolves the same way as `slide_image_path` in slides.jsonl.
-        saved.append(f"{out_dir.name}/{basename}")
+        # Return just the basename — the caller decides where to place
+        # the file (via `out_dir`) and what prefix, if any, it wants in
+        # its stored path (same convention as `slide_image_path`).
+        saved.append(basename)
 
     return saved
 
@@ -687,10 +688,12 @@ def save_right_side_composite(
          drawn shapes, labels — everything with geometry except tables).
       2. Crop the rendered slide PNG at that union bbox and save one file.
 
-    Returns a single-element list `[relative_path]` with the saved
-    basename, or `[]` when there's nothing on the right side to save or
-    no rendered slide PNG to crop from (falls back to the empty list
-    rather than the legacy per-picture output so the caller can decide).
+    Returns a single-element list `[basename]` for the saved file, or
+    `[]` when there's nothing on the right side to save or no rendered
+    slide PNG to crop from (falls back to the empty list rather than the
+    legacy per-picture output so the caller can decide). The caller owns
+    the placement decision — pass whatever `out_dir` and `filename_stem`
+    you want the saved file to land at.
     """
     prs = Presentation(str(pptx_path))
     slides = list(prs.slides)
@@ -739,7 +742,10 @@ def save_right_side_composite(
         basename = f"{filename_stem}.png"
         cropped.save(out_dir / basename, format="PNG")
 
-    return [f"{out_dir.name}/{basename}"]
+    # Return just the basename — the caller decides where to place the
+    # file (via `out_dir`) and what prefix, if any, it wants in its
+    # stored path (same convention as `slide_image_path`).
+    return [basename]
 
 
 def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:

@@ -148,18 +148,71 @@ CONCEPTS: tuple[str, ...] = (
     'Post-Purchase Experience',
 )
 
-_TEST_SECTION_RE = re.compile(r"\btests?\b", re.IGNORECASE)
+_TEST_SECTION_RE = re.compile(
+    # Whole word "test"/"tests" ...
+    r"\btests?\b"
+    # ... OR a known test-flow qualifier followed by "work" — some decks
+    # label the same buckets "Live work" / "Upcoming work" / "Concluded
+    # work" instead of the "... tests" wording. Restricting to a qualifier
+    # avoids matching unrelated sections like "Team work" or "Framework"
+    # (which \\b would already reject as a substring of "work" anyway).
+    r"|\b(live|upcoming|concluded|blocked|flagship|active|planned|paused|"
+    r"ongoing|new|in[-\s]?progress|in[-\s]?flight)\s+work\b",
+    re.IGNORECASE,
+)
+
+
+_APPENDIX_SECTION_RE = re.compile(r"\bappendix\b", re.IGNORECASE)
 
 
 def is_test_section(section: str) -> bool:
     """True when a slide's propagated section names a test bucket.
 
-    Matches any section whose name contains the whole word "test" or "tests"
-    — covers "Live tests", "Flagship tests", "Upcoming tests", "Blocked
-    tests", "A/B tests", etc. A section like "Contest" or "Latest news"
-    does NOT match because \\b enforces a word boundary.
+    Matches any section whose name contains the whole word "test" or
+    "tests" (covers "Live tests", "Flagship tests", "Upcoming tests",
+    "Blocked tests", "A/B tests"), OR one of the "... work" variants
+    used by decks that label the same buckets differently ("Live work",
+    "Upcoming work", "Concluded work"). A section like "Contest",
+    "Latest news", "Team work" or "Framework" does NOT match.
     """
     return bool(_TEST_SECTION_RE.search(section or ""))
+
+
+def is_appendix_section(section: str) -> bool:
+    """True when a slide's propagated section is the Appendix bucket.
+
+    Structure-based test detection needs to stop at the Appendix — slides
+    there often reproduce a test scaffold (Background / Hypothesis) as
+    reference material, not as new experiments to add to the historical
+    table.
+    """
+    return bool(_APPENDIX_SECTION_RE.search(section or ""))
+
+
+def has_test_structure(record: dict) -> bool:
+    """True when the slide's detail carries both a Background and a Hypothesis subheader.
+
+    Test slides across the deck follow a consistent "Background / Hypothesis"
+    scaffold — that structure is what makes them a test spec even when the
+    surrounding section header is missing, ambiguous, or worded differently
+    ("Live work" instead of "Live tests"). A trailing colon on the
+    subheader ("Background:") counts too. Recurses into nested children so
+    a test whose Background/Hypothesis sit under an outer wrapper subheader
+    still triggers.
+    """
+    seen: set[str] = set()
+    stack: list = list(record.get("detail") or [])
+    while stack:
+        b = stack.pop()
+        if not isinstance(b, dict):
+            continue
+        sh = (b.get("subheader") or "").strip().rstrip(":").lower()
+        if sh in ("background", "hypothesis"):
+            seen.add(sh)
+            if len(seen) == 2:
+                return True
+        stack.extend(b.get("children") or [])
+    return False
 
 
 def _walk_blocks_flatten(blocks: list, out: list[str]) -> None:

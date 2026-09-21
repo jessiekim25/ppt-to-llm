@@ -24,6 +24,8 @@ from .pptx_layout import (
 from .pptx_utils import pptx_to_pdf, resolve_pptx_input
 from .tests_table import (
     extract_test_row,
+    has_test_structure,
+    is_appendix_section,
     is_test_section,
     make_detail_marker,
     today_iso,
@@ -1005,7 +1007,25 @@ def main() -> None:
     # / etc. section.
     test_rows: list[dict] = []
     import_date = today_iso()
-    test_candidates = [r for r in records if is_test_section(r.get("section", ""))]
+    # Two ways a slide becomes a test candidate:
+    #   1. Its propagated section names a test bucket ("Live tests",
+    #      "Live work", "Concluded tests", etc.) — the explicit path.
+    #   2. Its detail carries the Background/Hypothesis scaffold — the
+    #      structural fallback that catches test slides whose section
+    #      header is missing or worded ambiguously. Gated on "not in the
+    #      Appendix" because appendix pages often reproduce that same
+    #      scaffold as reference material, not as new experiments.
+    test_candidates = []
+    structural_hits = 0
+    for r in records:
+        section = r.get("section", "") or ""
+        if is_test_section(section):
+            test_candidates.append(r)
+        elif not is_appendix_section(section) and has_test_structure(r):
+            test_candidates.append(r)
+            structural_hits += 1
+    if structural_hits:
+        print(f"[tests] {structural_hits} slide(s) picked up via Background/Hypothesis structure")
 
     # De-duplicate consecutive slides that share (section, sub_section). A
     # test — especially under 'Concluded tests' — is often split across two
@@ -1079,6 +1099,10 @@ def main() -> None:
                 slide_num_for_pics = 0
             if slide_num_for_pics:
                 slide_png = per_file_dir / f"slide_{slide_num_for_pics:03d}.png"
+                # File name: <ppt_file_name>#<page_num>.png, saved directly in
+                # the per-file dir so image_path in tests.jsonl is just the
+                # basename (matches how slide_image_path already resolves).
+                image_stem = f"{source_stem}#{slide_num_for_pics:03d}"
                 try:
                     # One composite image per slide — crop the rendered slide
                     # PNG at the union bbox of every right-side visual shape
@@ -1087,8 +1111,8 @@ def main() -> None:
                     image_paths = save_pptx_right_side_composite(
                         pptx_path,
                         slide_num_for_pics,
-                        per_file_dir / "test_images",
-                        filename_stem=f"test_{slide_num_for_pics:03d}",
+                        per_file_dir,
+                        filename_stem=image_stem,
                         slide_png_path=slide_png,
                     )
                     # Fall back to per-picture blob extraction only when there
@@ -1099,8 +1123,8 @@ def main() -> None:
                         image_paths = save_pptx_right_side_pictures(
                             pptx_path,
                             slide_num_for_pics,
-                            per_file_dir / "test_images",
-                            filename_stem=f"test_{slide_num_for_pics:03d}",
+                            per_file_dir,
+                            filename_stem=image_stem,
                         )
                 except Exception as e:
                     print(f"  ! saving right-side image failed for {sid}: {e}")
