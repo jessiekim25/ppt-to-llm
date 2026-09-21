@@ -1,8 +1,9 @@
 import argparse
 import json
+import os
 import re
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from openai import OpenAI
 
@@ -34,6 +35,29 @@ from .tests_table import (
 )
 
 SLIDE_FIELDS = ("product", "section", "sub_section", "model")
+
+
+_WINDOWS_STYLE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _looks_windows_path(dir_spec: str) -> bool:
+    """True for a drive-letter path (`S:\\...`) or a UNC share (`\\\\host\\...`)."""
+    return bool(_WINDOWS_STYLE_PATH_RE.match(dir_spec)) or dir_spec.startswith("\\\\")
+
+
+def _join_test_image_path(dir_spec: str, basename: str) -> str:
+    """Build the value stored in tests.jsonl's `image_path` column.
+
+    The shared folder is a Windows-style path (`S:\\UK\\...`), so the stored
+    value must keep backslashes regardless of what OS the extractor runs
+    on — a downstream reader (BI tool, MySQL client, humans on Windows)
+    resolves it against the actual share. A POSIX-style destination
+    (someone overrides `--test-images-dir` on Linux/mac) is kept in that
+    style so `Path(...)` on the reader's side still works.
+    """
+    if _looks_windows_path(dir_spec):
+        return str(PureWindowsPath(dir_spec) / basename)
+    return str(Path(dir_spec) / basename)
 
 
 def _slug(text: str, max_len: int = 60) -> str:
@@ -472,6 +496,15 @@ def parse_args() -> argparse.Namespace:
         "llm_monitor.historical_tests MySQL table. The rows are still "
         "extracted and written to tests.jsonl, and each test slide's "
         "detail is still replaced with the MySQL pointer marker.",
+    )
+    p.add_argument(
+        "--test-images-dir",
+        default=r"S:\UK\Departments\Data\Samsung EO CRO\Historical Tests",
+        help="Directory where per-test-slide composite images are written and "
+        "the FULL path that ends up in tests.jsonl's / MySQL's image_path "
+        "column. Defaults to the shared Samsung EO CRO folder. Falls back "
+        "to <per-file-dir>/<source_stem>#<slide-num>.png if the shared "
+        "folder can't be written.",
     )
     p.add_argument(
         "--diagnose-shapes",
@@ -1099,19 +1132,46 @@ def main() -> None:
                 slide_num_for_pics = 0
             if slide_num_for_pics:
                 slide_png = per_file_dir / f"slide_{slide_num_for_pics:03d}.png"
-                # File name: <ppt_file_name>#<page_num>.png, saved directly in
-                # the per-file dir so image_path in tests.jsonl is just the
-                # basename (matches how slide_image_path already resolves).
+                # File name: <source_stem>#<page_num>.png. Target is the
+                # shared folder from --test-images-dir; the full path is
+                # what lands in tests.jsonl / MySQL.
                 image_stem = f"{source_stem}#{slide_num_for_pics:03d}"
+                shared_dir = args.test_images_dir
+                if _looks_windows_path(shared_dir) and os.name != "nt":
+                    # Windows-style share on a non-Windows extractor — the
+                    # drive isn't mounted here, and Path.mkdir() would
+                    # otherwise create a literal "S:\..." directory at the
+                    # CWD. Save locally, but keep the shared path in
+                    # image_path so a downstream Windows consumer resolves
+                    # to the correct file after it's synced to the share.
+                    print(
+                        f"  [tests] not on Windows; images saved under {per_file_dir}, "
+                        f"image_path still references {shared_dir}"
+                    )
+                    save_dir = per_file_dir
+                    stored_dir_spec = shared_dir
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    save_dir = Path(shared_dir)
+                    stored_dir_spec = shared_dir
+                    try:
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                    except OSError as e:
+                        print(
+                            f"  ! shared images dir {shared_dir!r} not writable "
+                            f"({e}); falling back to {per_file_dir}"
+                        )
+                        save_dir = per_file_dir
+                        stored_dir_spec = str(per_file_dir)
                 try:
                     # One composite image per slide — crop the rendered slide
                     # PNG at the union bbox of every right-side visual shape
                     # so any overlay (highlight rectangle, arrow, label)
                     # comes along with the underlying picture.
-                    image_paths = save_pptx_right_side_composite(
+                    basenames = save_pptx_right_side_composite(
                         pptx_path,
                         slide_num_for_pics,
-                        per_file_dir,
+                        save_dir,
                         filename_stem=image_stem,
                         slide_png_path=slide_png,
                     )
@@ -1119,13 +1179,14 @@ def main() -> None:
                     # is no rendered PNG to crop from (e.g. --no-images) — the
                     # blobs still miss the overlays but at least keep the
                     # tests.jsonl `image_path` column non-empty.
-                    if not image_paths and not slide_png.exists():
-                        image_paths = save_pptx_right_side_pictures(
+                    if not basenames and not slide_png.exists():
+                        basenames = save_pptx_right_side_pictures(
                             pptx_path,
                             slide_num_for_pics,
-                            per_file_dir,
+                            save_dir,
                             filename_stem=image_stem,
                         )
+                    image_paths = [_join_test_image_path(stored_dir_spec, b) for b in basenames]
                 except Exception as e:
                     print(f"  ! saving right-side image failed for {sid}: {e}")
         try:
