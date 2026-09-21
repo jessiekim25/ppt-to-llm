@@ -207,7 +207,7 @@ For each test slide the extractor:
 
 1. Sends the flattened slide content + speaker notes to the LLM with the `cro.historical_test` schema and the approved-value lists (concepts, components, products, KPIs).
 2. Coerces any drift — a `concept`, `component`, `product`, or `kpi` value that isn't an exact match from its approved list is dropped rather than shipped.
-3. Saves every picture on the slide's right half (bbox-center x ≥ 0.5) to `<per-file-dir>/test_images/test_<slide-num>_<i>.<ext>` — the paths land in the row's `image_path` column so downstream can render the mockup next to the extracted fields.
+3. Crops ONE composite image per slide from the rendered slide PNG at the union bbox of every right-side visual shape (pictures + drawn shapes + labels, tables excluded), writes it to `<per-file-dir>/test_images/test_<slide-num>.png`, and lands the path in the row's `image_path` column so downstream can render the mockup next to the extracted fields. Cropping from the rendered slide preserves overlays (highlight rectangles, arrows) that a raw picture-blob export would drop, and keeps the mockup composition together as one image instead of splitting it per picture. Under `--no-images` (no rendered PNG available) the extractor falls back to saving each right-side picture blob separately as `test_<slide-num>_<i>.<ext>`.
 4. Writes one row per test slide to `<per-file-dir>/tests.jsonl` with the column order below.
 5. `REPLACE INTO cro.historical_test` with those rows (skipped by `--no-tests-upload` or when the MySQL secret isn't configured). List-valued columns (`component`, `product`, `kpi`, `image_path`) are JSON-encoded on the way to MySQL.
 6. Replaces the slide's `detail` in `slides.jsonl` with a single-block pointer marker naming the MySQL table and `source` key, so downstream RAG doesn't re-embed the same content twice.
@@ -226,7 +226,7 @@ Table columns (order matches MySQL and `tests.jsonl`):
 | `kpi`              | non-empty, de-duplicated list of every KPI the test tracks — `CVR`, `AOV`, `Engagement Rate`, `Add to Cart Rate`, `Revenue per Visitor` |
 | `target_audience`  | free text (e.g. `all users`, `mobile only`)                                                                  |
 | `notes`            | caveats / exclusions / watch-outs — `null` if none                                                           |
-| `image_path`       | list of saved right-side image paths, relative to `<per-file-dir>` (e.g. `test_images/test_042_1.png`)       |
+| `image_path`       | list with the saved composite image path (single entry, `test_images/test_<slide-num>.png`), relative to `<per-file-dir>`. Under `--no-images` falls back to a per-picture list like `test_images/test_042_1.png` |
 | `importDate`       | ISO date of the extraction run                                                                               |
 
 MySQL credentials come from a separate AWS Secrets Manager secret:

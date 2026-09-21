@@ -573,6 +573,11 @@ def save_right_side_pictures(
     `x_center_min` is the minimum (fractional) x-center a picture's bbox
     must have to count as right-side; the default 0.5 uses the slide's
     horizontal midline. Group shapes are recursed into.
+
+    Legacy: emits one file per picture and loses any overlaid shapes
+    (highlight rectangles, arrows) drawn on top of the picture in the
+    slide. Prefer `save_right_side_composite`, which crops one image
+    per slide from the rendered slide PNG so the overlays are preserved.
     """
     prs = Presentation(str(pptx_path))
     slides = list(prs.slides)
@@ -622,6 +627,119 @@ def save_right_side_pictures(
         saved.append(f"{out_dir.name}/{basename}")
 
     return saved
+
+
+def _walk_right_side_visual_bboxes(
+    shapes,
+    slide_w: int,
+    slide_h: int,
+    x_center_min: float,
+    out: list[tuple[float, float, float, float]],
+) -> None:
+    """Collect bboxes of every right-side visual shape (pictures + drawn
+    shapes + labels) so a caller can union them into one crop region.
+
+    Anything with geometry counts EXCEPT tables — pictures, auto-shapes and
+    freeforms (the highlight rectangles / arrows / callouts that get drawn
+    on top of a screenshot), lines, connectors, text boxes and text
+    placeholders (labels sitting next to the mockup). Group shapes are
+    recursed into so children are considered individually rather than the
+    group as a single opaque bbox.
+    """
+    for shape in shapes:
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            _walk_right_side_visual_bboxes(
+                shape.shapes, slide_w, slide_h, x_center_min, out
+            )
+            continue
+        # Tables carry their own extractor and shouldn't stretch the crop.
+        if getattr(shape, "has_table", False):
+            continue
+        if _shape_has_table_xml(shape):
+            continue
+        bbox = _shape_bbox_pct(shape, slide_w, slide_h)
+        x0, _, x1, _ = bbox
+        if x1 <= x0:
+            continue
+        cx = (x0 + x1) / 2
+        if cx < x_center_min:
+            continue
+        out.append(bbox)
+
+
+def save_right_side_composite(
+    pptx_path: Path,
+    slide_num: int,
+    out_dir: Path,
+    filename_stem: str,
+    slide_png_path: Path | None = None,
+    x_center_min: float = 0.5,
+) -> list[str]:
+    """Save ONE composite image per slide covering the right-side visual region.
+
+    A test slide typically carries text on the left and a mockup composition
+    on the right — often a screenshot with an overlaid highlight rectangle
+    drawn on top, plus a label or two beside it. Extracting each PICTURE
+    shape individually splits that composition into pieces and drops the
+    overlays entirely (they aren't pictures), so instead we:
+
+      1. Union the bboxes of every right-side visual shape (pictures,
+         drawn shapes, labels — everything with geometry except tables).
+      2. Crop the rendered slide PNG at that union bbox and save one file.
+
+    Returns a single-element list `[relative_path]` with the saved
+    basename, or `[]` when there's nothing on the right side to save or
+    no rendered slide PNG to crop from (falls back to the empty list
+    rather than the legacy per-picture output so the caller can decide).
+    """
+    prs = Presentation(str(pptx_path))
+    slides = list(prs.slides)
+    if slide_num < 1 or slide_num > len(slides):
+        return []
+    slide = slides[slide_num - 1]
+    slide_w = int(prs.slide_width or 0)
+    slide_h = int(prs.slide_height or 0)
+    if slide_w <= 0 or slide_h <= 0:
+        return []
+
+    if slide_png_path is None or not slide_png_path.exists():
+        return []
+
+    bboxes: list[tuple[float, float, float, float]] = []
+    _walk_right_side_visual_bboxes(
+        slide.shapes, slide_w, slide_h, x_center_min, bboxes
+    )
+    if not bboxes:
+        return []
+
+    x0 = max(0.0, min(1.0, min(b[0] for b in bboxes)))
+    y0 = max(0.0, min(1.0, min(b[1] for b in bboxes)))
+    x1 = max(0.0, min(1.0, max(b[2] for b in bboxes)))
+    y1 = max(0.0, min(1.0, max(b[3] for b in bboxes)))
+    if x1 <= x0 or y1 <= y0:
+        return []
+
+    # Local import — pptx_layout is otherwise PIL-free and we don't want to
+    # pull it in for callers that only need the layout dataclasses.
+    from PIL import Image
+
+    with Image.open(slide_png_path) as im:
+        w, h = im.size
+        px_box = (
+            int(round(x0 * w)),
+            int(round(y0 * h)),
+            int(round(x1 * w)),
+            int(round(y1 * h)),
+        )
+        # Guard against a zero-area crop after rounding.
+        if px_box[2] <= px_box[0] or px_box[3] <= px_box[1]:
+            return []
+        cropped = im.crop(px_box)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        basename = f"{filename_stem}.png"
+        cropped.save(out_dir / basename, format="PNG")
+
+    return [f"{out_dir.name}/{basename}"]
 
 
 def extract_slide_notes(pptx_path: Path, slide_num: int) -> str:

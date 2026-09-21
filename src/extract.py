@@ -17,6 +17,7 @@ from .pptx_layout import (
     diagnose_slide_shapes as diagnose_pptx_slide_shapes,
     extract_slide_layout as extract_pptx_slide_layout,
     extract_slide_notes as extract_pptx_slide_notes,
+    save_right_side_composite as save_pptx_right_side_composite,
     save_right_side_pictures as save_pptx_right_side_pictures,
     slide_count as pptx_slide_count,
 )
@@ -1077,15 +1078,32 @@ def main() -> None:
             except ValueError:
                 slide_num_for_pics = 0
             if slide_num_for_pics:
+                slide_png = per_file_dir / f"slide_{slide_num_for_pics:03d}.png"
                 try:
-                    image_paths = save_pptx_right_side_pictures(
+                    # One composite image per slide — crop the rendered slide
+                    # PNG at the union bbox of every right-side visual shape
+                    # so any overlay (highlight rectangle, arrow, label)
+                    # comes along with the underlying picture.
+                    image_paths = save_pptx_right_side_composite(
                         pptx_path,
                         slide_num_for_pics,
                         per_file_dir / "test_images",
                         filename_stem=f"test_{slide_num_for_pics:03d}",
+                        slide_png_path=slide_png,
                     )
+                    # Fall back to per-picture blob extraction only when there
+                    # is no rendered PNG to crop from (e.g. --no-images) — the
+                    # blobs still miss the overlays but at least keep the
+                    # tests.jsonl `image_path` column non-empty.
+                    if not image_paths and not slide_png.exists():
+                        image_paths = save_pptx_right_side_pictures(
+                            pptx_path,
+                            slide_num_for_pics,
+                            per_file_dir / "test_images",
+                            filename_stem=f"test_{slide_num_for_pics:03d}",
+                        )
                 except Exception as e:
-                    print(f"  ! saving right-side pictures failed for {sid}: {e}")
+                    print(f"  ! saving right-side image failed for {sid}: {e}")
         try:
             row = extract_test_row(
                 client,
